@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axonflow-google-adk-plugin"
+version = "1.0.0"
+description = "AxonFlow governance plugin for Google Agent Development Kit (ADK)"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "AxonFlow", email = "hello@getaxonflow.com"},
+]
+keywords = ["axonflow", "google-adk", "adk", "ai-governance", "llm", "policy", "compliance"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "google-adk>=2.0.0",
+    "axonflow>=8.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://getaxonflow.com"
+Documentation = "https://docs.getaxonflow.com/docs/integration/google-adk"
+Repository = "https://github.com/getaxonflow/axonflow-google-adk-plugin"
+Changelog = "https://github.com/getaxonflow/axonflow-google-adk-plugin/blob/main/CHANGELOG.md"
+Issues = "https://github.com/getaxonflow/axonflow-google-adk-plugin/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["axonflow_adk*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

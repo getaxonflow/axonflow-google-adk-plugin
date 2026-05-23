@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract CHANGELOG section
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          awk -v ver="$VERSION" '$0 ~ "^## \\["ver"\\]" {p=1; next} p && /^## \[/ {exit} p {print}' CHANGELOG.md > /tmp/release-body.md
+          if [ ! -s /tmp/release-body.md ]; then
+            echo "::error::No CHANGELOG.md section found for version $VERSION — refusing to publish."
+            echo "::error::Add a '## [$VERSION] - YYYY-MM-DD' section to CHANGELOG.md and re-tag."
+            exit 1
+          fi
+          {
+            echo "## AxonFlow Google ADK Plugin v${VERSION}"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo '```bash'
+            echo "pip install axonflow-google-adk-plugin==${VERSION}"
+            echo '```'
+            echo ""
+            cat /tmp/release-body.md
+          } > /tmp/release-body-final.md
+          echo "Release body: $(wc -l < /tmp/release-body-final.md) lines"
+
+      - name: Upload release body artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-body
+          path: /tmp/release-body-final.md
+          retention-days: 1
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update version in source
+        run: |
+          set -e
+          VERSION=${{ steps.version.outputs.VERSION }}
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" axonflow_adk/_version.py
+          echo "Updated version to ${VERSION}"
+          grep "^version" pyproject.toml | head -1
+          grep "^__version__" axonflow_adk/_version.py
+          if ! grep -q "^version = \"${VERSION}\"" pyproject.toml; then
+            echo "::error::sed did not bump pyproject.toml to ${VERSION}"
+            exit 1
+          fi
+          if ! grep -q "^__version__ = \"${VERSION}\"" axonflow_adk/_version.py; then
+            echo "::error::sed did not bump axonflow_adk/_version.py to ${VERSION}"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  create-release:
+    needs: [preflight, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Download release body artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-body
+          path: /tmp/release-body
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          name: Release ${{ github.ref_name }}
+          body_path: /tmp/release-body/release-body-final.md
+          generate_release_notes: false
+
+  verify-publish:
+    needs: [preflight, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Wait for PyPI propagation
+        run: sleep 30
+
+      - name: Verify package on PyPI
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: Checking PyPI for axonflow-google-adk-plugin==${VERSION}..."
+            if pip install --dry-run axonflow-google-adk-plugin==${VERSION} 2>&1 | grep -q "Would install"; then
+              echo "SUCCESS: axonflow-google-adk-plugin ${VERSION} is available on PyPI"
+              exit 0
+            fi
+            echo "Not yet available, waiting 30 seconds..."
+            sleep 30
+          done
+          echo "FAILURE: axonflow-google-adk-plugin ${VERSION} not found on PyPI after 5 attempts"
+          exit 1
