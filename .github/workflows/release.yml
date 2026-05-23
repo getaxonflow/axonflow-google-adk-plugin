@@ -43,8 +43,24 @@ jobs:
           path: /tmp/release-body-final.md
           retention-days: 1
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint
+        run: ruff check axonflow_adk/
+
   build:
-    needs: preflight
+    needs: [preflight, lint]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,8 +112,63 @@ jobs:
           name: dist
           path: dist/
 
-  publish-pypi:
+  runtime-e2e:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download built wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install built wheel
+        run: pip install dist/*.whl
+
+      - name: Start AxonFlow stack
+        working-directory: runtime-e2e
+        run: |
+          docker compose up -d
+          echo "Waiting for AxonFlow agent health..."
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null --max-time 2 http://localhost:18080/health 2>/dev/null; then
+              echo "Agent healthy after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "::error::Agent not healthy after 90s"
+              docker compose logs
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run runtime E2E tests
+        working-directory: runtime-e2e
+        env:
+          AGENT_URL: http://localhost:18080
+        run: |
+          for test_dir in agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned; do
+            echo "--- $test_dir ---"
+            if [ -f "$test_dir/test.sh" ]; then
+              bash "$test_dir/test.sh"
+            fi
+          done
+
+      - name: Tear down stack
+        if: always()
+        working-directory: runtime-e2e
+        run: docker compose down -v
+
+  publish-pypi:
+    needs: [build, runtime-e2e]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
