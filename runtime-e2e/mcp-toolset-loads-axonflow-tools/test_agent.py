@@ -35,10 +35,9 @@ async def main() -> int:
             client_id="e2e-test",
             client_secret="e2e-secret",
         )
-    except ImportError:
-        # McpToolset may not be available in all ADK installations
-        print("SKIP: McpToolset not available in this ADK installation")
-        return 0
+    except ImportError as exc:
+        print(f"FAIL: McpToolset not available — {exc}")
+        return 1
     except Exception as exc:
         print(f"FAIL: axonflow_mcp_toolset() construction failed: {exc}")
         return 1

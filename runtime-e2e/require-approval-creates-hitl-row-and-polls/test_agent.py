@@ -1,20 +1,18 @@
 # Copyright 2026 AxonFlow
 # SPDX-License-Identifier: MIT
 
-"""Verify the 4-step HITL approval flow against a real AxonFlow agent.
+"""Verify the HITL approval flow against a real AxonFlow agent.
 
-This test exercises the full HITL lifecycle:
+Prerequisite: a require_approval policy for 'disburse_payment' has been
+inserted into static_policies by test.sh BEFORE this script runs.
+
+This test exercises steps 1-3 of the HITL lifecycle:
   1. pre_check returns require_approval
   2. plugin calls create_hitl_request to enqueue a row
-  3. plugin polls get_hitl_request
-  4. a sidecar auto-approves the request
-  5. plugin resumes the model call
+  3. plugin polls get_hitl_request (times out after max_wait)
 
-If the AxonFlow agent does not have a require_approval policy configured,
-the test verifies the HITL flow using the deny-fast path instead (polling
-disabled), since creating a require_approval policy requires enterprise
-mode. The test documents what a full HITL E2E looks like and passes
-in both scenarios.
+The test verifies that a hitl_approval_queue row was created by the
+plugin. Approval/denial is verified at the DB level by test.sh.
 """
 
 from __future__ import annotations
@@ -46,9 +44,6 @@ def disburse_payment(amount_cents: int, customer_id: str) -> dict:
 async def main() -> int:
     endpoint = os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:18080")
 
-    # Test with HITL polling disabled (deny-fast) — this works without a
-    # require_approval policy. The test verifies the plugin correctly
-    # handles the non-HITL path.
     plugin = AxonFlowPlugin(
         endpoint=endpoint,
         client_id="e2e-test",
@@ -57,9 +52,9 @@ async def main() -> int:
             call_timeout_seconds=10.0,
             default_user_token="e2e-user",
             request_type="adk-e2e-hitl-test",
-            # For this test scenario, disable HITL polling so we can verify
-            # the create + deny-fast path works without needing a reviewer.
-            enable_hitl_polling=False,
+            # Enable HITL polling so the plugin creates a row and polls.
+            # Short timeout so the test does not block long.
+            enable_hitl_polling=True,
             approval_max_wait_seconds=5.0,
             approval_poll_interval_seconds=0.5,
         ),
@@ -104,13 +99,8 @@ async def main() -> int:
         print("FAIL: no events received")
         return 1
 
-    # The agent should complete — either the tool ran (no require_approval
-    # policy) or the model got a deny response (from fail-open on
-    # unreachable HITL endpoint).
     print(f"  received {len(events)} event(s)")
-
-    # Verify the plugin's constructor + lifecycle worked
-    print("PASS: require-approval-creates-hitl-row-and-polls (deny-fast path)")
+    print("OK: require-approval-creates-hitl-row-and-polls")
     return 0
 
 
