@@ -1,0 +1,80 @@
+# AxonFlow Google ADK Plugin — Runtime E2E Stack
+#
+# Brings up: Postgres + Redis + AxonFlow Agent (community mode)
+#
+# Usage:
+#   cd runtime-e2e
+#   docker compose up -d
+#   ./run-all.sh
+#   docker compose down -v
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: adk-e2e-postgres
+    environment:
+      POSTGRES_USER: axonflow
+      POSTGRES_PASSWORD: localdev123
+      POSTGRES_DB: axonflow
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - adk-e2e-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: adk-e2e-redis
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - adk-e2e-network
+
+  axonflow-agent:
+    image: ${AXONFLOW_AGENT_IMAGE:-ghcr.io/getaxonflow/axonflow-agent:latest}
+    container_name: adk-e2e-agent
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+      PORT: 8080
+      ENVIRONMENT: development
+      DEPLOYMENT_MODE: community
+      DEPLOYMENT_KIND: dev
+      LOG_LEVEL: debug
+      REDIS_URL: redis://redis:6379
+      AXONFLOW_TELEMETRY: "off"
+      CI: "true"
+    ports:
+      - "18080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 45s
+    networks:
+      - adk-e2e-network
+
+networks:
+  adk-e2e-network:
+    driver: bridge

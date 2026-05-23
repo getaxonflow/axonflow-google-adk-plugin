@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-05-24
+
+### Fixed (caught by runtime E2E)
+
+- `before_model_callback`: `pre_check` now passes `tenant_id` from plugin
+  config, matching `before_tool_callback` which already did. Without this,
+  model-level governance used the SDK default tenant while tool-level
+  governance used the configured tenant.
+- `before_model_callback`: `pre_check` now passes `request_type` from plugin
+  config. The field was declared on `AxonFlowPluginConfig` but never
+  propagated to the SDK call, so audit-log filtering by request type did
+  not work for model-level checks.
+- `after_model_callback`: `audit_llm_call` now passes `user_token` so
+  audit rows are attributed to the user who triggered the model call.
+- `after_tool_callback`: successful tool calls now emit an
+  `audit_tool_call(success=True)` entry. Previously only
+  `on_tool_error_callback` recorded audit rows, leaving successful tool
+  calls without an explicit audit trail.
+
+### Added
+
+- `runtime-e2e/` directory with real-framework end-to-end tests that invoke
+  the plugin through ADK `InMemoryRunner` against a real AxonFlow stack.
+  Six test scenarios covering registration, policy deny, success audit,
+  HITL approval flow, MCP toolset loading, and the AgentTool isolation
+  gotcha.
+- Release workflow (`release.yml`) now gates PyPI publish on `runtime-e2e`
+  job passing.
+- Lint job (`ruff check`) added to both `test.yml` and `release.yml`.
+
 ## [1.0.0] - 2026-05-23
 
 Initial standalone release. Previously shipped as an example integration in the

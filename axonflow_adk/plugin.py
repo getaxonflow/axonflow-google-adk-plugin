@@ -741,6 +741,8 @@ class AxonFlowPlugin(BasePlugin):
                 user_token=user_token,
                 query=query,
                 context=context,
+                tenant_id=self._config.tenant_id,
+                request_type=self._config.request_type,
             )
 
         result = await self._call_with_guard(
@@ -833,6 +835,8 @@ class AxonFlowPlugin(BasePlugin):
             token_usage = TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
         provider = self._infer_provider(model_name)
 
+        user_token = self._user_token(callback_context)
+
         async def _do_audit() -> Any:
             client = await self._get_client()
             return await client.audit_llm_call(
@@ -842,6 +846,7 @@ class AxonFlowPlugin(BasePlugin):
                 model=str(model_name),
                 token_usage=token_usage,
                 latency_ms=latency_ms,
+                user_token=user_token,
             )
 
         # Audit failures must never break the agent.
@@ -1017,6 +1022,35 @@ class AxonFlowPlugin(BasePlugin):
         if check is None:
             return None
         if getattr(check, "allowed", False):
+            # Record the success audit entry so successful tool calls have
+            # an explicit trail — previously only on_tool_error_callback
+            # wrote audit rows, leaving a gap for the happy path.
+            scrubbed = self._safe_input_dict(tool_args)
+            if scrubbed and self._config.argument_redactor is not None:
+                try:
+                    scrubbed = self._config.argument_redactor(scrubbed)
+                except Exception as exc:  # noqa: BLE001 - never break audit
+                    logger.warning("axonflow argument_redactor failed: %s", exc)
+            try:
+                audit_request = AuditToolCallRequest(
+                    tool_name=tool_name,
+                    tool_type="adk-tool",
+                    input=scrubbed,
+                    user_id=user_token,
+                    success=True,
+                    error_message=None,
+                )
+            except Exception as exc:  # noqa: BLE001 - SDK shape drift tolerated
+                logger.warning(
+                    "axonflow AuditToolCallRequest construction failed: %s; skipping success audit", exc
+                )
+                return None
+
+            async def _do_success_audit() -> Any:
+                client = await self._get_client()
+                return await client.audit_tool_call(request=audit_request)
+
+            await self._call_with_guard("audit_tool_call", _do_success_audit, fail_open=True)
             return None
 
         # Platform redacted the output. Preserve the original

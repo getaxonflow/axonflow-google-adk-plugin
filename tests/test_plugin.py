@@ -1031,3 +1031,110 @@ async def test_state_keys_use_temp_prefix(fake_client, callback_context, llm_req
 )
 def test_infer_provider(model_name, expected):
     assert AxonFlowPlugin._infer_provider(model_name) == expected
+
+
+# ---------------------------------------------------------------------------
+# 9. Bug-fix regression tests (v1.0.1)
+# ---------------------------------------------------------------------------
+
+
+async def test_pre_check_passes_tenant_id(
+    fake_client, callback_context, llm_request_with_text
+):
+    """v1.0.0 bug: pre_check omitted tenant_id while check_tool_input passed it."""
+    fake_client.pre_check_result = types.SimpleNamespace(
+        approved=True, context_id="ctx", block_reason=None
+    )
+    plugin = _new_plugin(fake_client, tenant_id="my-tenant")
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request_with_text
+    )
+    assert fake_client.calls[0][0] == "pre_check"
+    assert fake_client.calls[0][1]["tenant_id"] == "my-tenant"
+
+
+async def test_pre_check_passes_request_type(
+    fake_client, callback_context, llm_request_with_text
+):
+    """v1.0.0 bug: pre_check omitted request_type despite config declaring it."""
+    fake_client.pre_check_result = types.SimpleNamespace(
+        approved=True, context_id="ctx", block_reason=None
+    )
+    plugin = _new_plugin(fake_client, request_type="custom-type")
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request_with_text
+    )
+    assert fake_client.calls[0][0] == "pre_check"
+    assert fake_client.calls[0][1]["request_type"] == "custom-type"
+
+
+async def test_audit_llm_call_passes_user_token(
+    fake_client, callback_context, llm_response_with_text
+):
+    """v1.0.0 bug: audit_llm_call omitted user_token so audit rows were unattributed."""
+    callback_context.state[_S("last_context_id")] = "ctx-1"
+    callback_context.state[_S("last_model")] = "gemini-2.0-flash"
+    callback_context.state[_S("call_start_monotonic")] = 0.0
+    callback_context.state["axonflow_user_token"] = "jwt-token-123"
+
+    plugin = _new_plugin(fake_client)
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=llm_response_with_text
+    )
+
+    audit_calls = [c for c in fake_client.calls if c[0] == "audit_llm_call"]
+    assert len(audit_calls) == 1
+    assert audit_calls[0][1]["user_token"] == "jwt-token-123"
+
+
+async def test_after_tool_success_audit_fires(fake_client, tool_context, fake_tool):
+    """v1.0.0 bug: after_tool_callback never called audit_tool_call(success=True)."""
+    fake_client.check_tool_output_result = types.SimpleNamespace(
+        allowed=True,
+        block_reason=None,
+        redacted_message=None,
+    )
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={"amount_cents": 100000},
+        tool_context=tool_context,
+        result={"status": "ok"},
+    )
+    assert result is None, "allowed tool output must return None"
+
+    audit_calls = [c for c in fake_client.calls if c[0] == "audit_tool_call"]
+    assert len(audit_calls) == 1, "success audit MUST fire on allowed tool output"
+    req = audit_calls[0][1]["request"]
+    assert req.success is True
+    assert req.tool_name == "disburse_payment"
+    assert req.error_message is None
+
+
+async def test_after_tool_success_audit_uses_redactor(
+    fake_client, tool_context, fake_tool
+):
+    """argument_redactor is applied before the success audit, not just error audit."""
+    from axonflow_adk.plugin import AxonFlowPluginConfig
+
+    def scrub(args: dict) -> dict:
+        return {k: ("[REDACTED]" if k == "secret" else v) for k, v in args.items()}
+
+    cfg = AxonFlowPluginConfig(
+        call_timeout_seconds=0.5, argument_redactor=scrub
+    )
+    fake_client.check_tool_output_result = types.SimpleNamespace(
+        allowed=True, block_reason=None, redacted_message=None
+    )
+    plugin = AxonFlowPlugin.from_client(fake_client, config=cfg)
+    await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={"secret": "my-api-key", "amount": 100},
+        tool_context=tool_context,
+        result={"status": "ok"},
+    )
+    audit_calls = [c for c in fake_client.calls if c[0] == "audit_tool_call"]
+    assert audit_calls
+    req = audit_calls[0][1]["request"]
+    assert req.input["secret"] == "[REDACTED]"
+    assert req.input["amount"] == 100
