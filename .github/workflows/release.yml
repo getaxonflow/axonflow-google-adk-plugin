@@ -162,13 +162,23 @@ jobs:
         working-directory: runtime-e2e
         env:
           AGENT_URL: http://localhost:18080
+          DB_HOST: localhost
+          DB_PORT: "15432"
+          DB_PASSWORD: localdev123
         run: |
+          START_TIME=$(date +%s)
           for test_dir in agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned; do
             echo "--- $test_dir ---"
             if [ -f "$test_dir/test.sh" ]; then
               bash "$test_dir/test.sh"
             fi
           done
+          ELAPSED=$(($(date +%s) - START_TIME))
+          echo "Total runtime-e2e duration: ${ELAPSED}s"
+          if [ "$ELAPSED" -lt 30 ]; then
+            echo "::error::runtime-e2e completed in ${ELAPSED}s (< 30s floor) — suspect silent skip"
+            exit 1
+          fi
 
       - name: Tear down stack
         if: always()

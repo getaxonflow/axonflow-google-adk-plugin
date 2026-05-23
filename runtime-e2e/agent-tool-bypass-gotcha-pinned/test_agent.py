@@ -104,7 +104,7 @@ async def main() -> int:
         return 1
 
     print("PASS: agent-tool-bypass-gotcha-pinned")
-    print("  NOTE: AgentTool sub-agents are NOT governed by AxonFlowPlugin.")
+    print("  AgentTool sub-agents are NOT governed by AxonFlowPlugin (ADK limitation).")
     print("  Use RemoteA2aAgent or register the plugin on the inner Runner.")
     return 0
 

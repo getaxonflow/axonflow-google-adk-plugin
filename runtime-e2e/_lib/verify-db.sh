@@ -128,8 +128,70 @@ case "${1:-}" in
     exit 0
     ;;
 
+  audit-log-exists)
+    client_id="${2:?usage: verify-db.sh audit-log-exists <client_id>}"
+    validate_safe_string "$client_id" "client_id"
+    count=$(psql_param -c "SELECT COUNT(*) FROM audit_logs WHERE client_id = '$client_id'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no row in audit_logs where client_id='$client_id'"
+      exit 1
+    fi
+    echo "OK: found $count audit_logs row(s) for client_id='$client_id'"
+    exit 0
+    ;;
+
+  audit-log-denied)
+    client_id="${2:?usage: verify-db.sh audit-log-denied <client_id>}"
+    validate_safe_string "$client_id" "client_id"
+    count=$(psql_param -c "SELECT COUNT(*) FROM audit_logs WHERE client_id = '$client_id' AND policy_decision = 'denied'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no denied row in audit_logs for client_id='$client_id'"
+      exit 1
+    fi
+    echo "OK: found $count denied audit_logs row(s) for client_id='$client_id'"
+    exit 0
+    ;;
+
+  mcp-audit-exists)
+    connector_name="${2:?usage: verify-db.sh mcp-audit-exists <connector_name>}"
+    validate_safe_string "$connector_name" "connector_name"
+    count=$(psql_param -c "SELECT COUNT(*) FROM mcp_query_audits WHERE connector_name = '$connector_name'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no row in mcp_query_audits where connector_name='$connector_name'"
+      exit 1
+    fi
+    echo "OK: found $count mcp_query_audits row(s) for connector_name='$connector_name'"
+    exit 0
+    ;;
+
+  hitl-exists)
+    client_id="${2:?usage: verify-db.sh hitl-exists <client_id>}"
+    validate_safe_string "$client_id" "client_id"
+    count=$(psql_param -c "SELECT COUNT(*) FROM hitl_approval_queue WHERE client_id = '$client_id'")
+    if [ "$count" -eq 0 ]; then
+      echo "FAIL: no row in hitl_approval_queue for client_id='$client_id'"
+      exit 1
+    fi
+    echo "OK: found $count hitl_approval_queue row(s) for client_id='$client_id'"
+    exit 0
+    ;;
+
+  audit-log-absent)
+    client_id="${2:?usage: verify-db.sh audit-log-absent <client_id> <query_pattern>}"
+    query_pattern="${3:?}"
+    validate_safe_string "$client_id" "client_id"
+    validate_safe_string "$query_pattern" "query_pattern"
+    count=$(psql_param -c "SELECT COUNT(*) FROM audit_logs WHERE client_id = '$client_id' AND query LIKE '%$query_pattern%'")
+    if [ "$count" -gt 0 ]; then
+      echo "FAIL: found $count unexpected row(s) in audit_logs for client_id='$client_id' matching '$query_pattern'"
+      exit 1
+    fi
+    echo "OK: no audit_logs rows for client_id='$client_id' matching '$query_pattern' (expected)"
+    exit 0
+    ;;
+
   *)
-    echo "Usage: $0 {audit-row-exists|audit-row-count|hitl-row|hitl-field|table-row-count} ..."
+    echo "Usage: $0 {audit-row-exists|audit-row-count|hitl-row|hitl-field|table-row-count|audit-log-exists|audit-log-denied|mcp-audit-exists|hitl-exists|audit-log-absent} ..."
     exit 2
     ;;
 esac
