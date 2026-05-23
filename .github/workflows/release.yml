@@ -132,6 +132,14 @@ jobs:
       - name: Install built wheel
         run: pip install dist/*.whl
 
+      - name: Build AxonFlow agent image
+        run: |
+          git clone --depth 1 https://github.com/getaxonflow/axonflow.git /tmp/axonflow
+          docker build -t ghcr.io/getaxonflow/axonflow-agent:latest \
+            -f /tmp/axonflow/platform/agent/Dockerfile \
+            --build-arg EDITION=community \
+            /tmp/axonflow
+
       - name: Start AxonFlow stack
         working-directory: runtime-e2e
         run: |
