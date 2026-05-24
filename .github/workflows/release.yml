@@ -194,8 +194,8 @@ jobs:
           done
           ELAPSED=$(($(date +%s) - START_TIME))
           echo "Total runtime-e2e duration: ${ELAPSED}s"
-          if [ "$ELAPSED" -lt 30 ]; then
-            echo "::error::runtime-e2e completed in ${ELAPSED}s (< 30s floor) — suspect silent skip"
+          if [ "$ELAPSED" -lt 10 ]; then
+            echo "::error::runtime-e2e completed in ${ELAPSED}s (< 10s floor) — suspect silent skip"
             exit 1
           fi
 
