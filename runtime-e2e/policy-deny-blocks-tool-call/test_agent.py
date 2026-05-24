@@ -35,6 +35,7 @@ def disburse_payment(amount: int, destination: str) -> dict:
     """Disburse payment to a destination account."""
     global TOOL_EXECUTED
     TOOL_EXECUTED = True
+    print(f"  !!! TOOL FUNCTION INVOKED: amount={amount}, destination={destination}")
     return {"status": "ok", "amount": amount, "destination": destination}
 
 

@@ -15,9 +15,12 @@ DB_PORT="${DB_PORT:-15432}"
 echo "=== mcp-toolset-loads-axonflow-tools ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
+# SETUP: ensure mcp package is installed (required by McpToolset)
+pip install mcp --quiet 2>/dev/null || true
+
 # RUN: execute the test (must not skip — exit 1 if McpToolset unavailable)
 cd "$E2E_DIR"
-python "$SCRIPT_DIR/test_agent.py"
+python3 "$SCRIPT_DIR/test_agent.py"
 
 # ASSERT: verify the agent health endpoint is reachable (the test
 # validates toolset construction + connection params in Python; we

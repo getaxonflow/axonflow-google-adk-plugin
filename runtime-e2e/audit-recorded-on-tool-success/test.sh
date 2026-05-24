@@ -17,7 +17,7 @@ echo "  endpoint: $AXONFLOW_ENDPOINT"
 
 # RUN: execute the agent test
 cd "$E2E_DIR"
-python "$SCRIPT_DIR/test_agent.py"
+python3 "$SCRIPT_DIR/test_agent.py"
 
 # ASSERT: verify audit_logs row exists for client_id='e2e-test'
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"

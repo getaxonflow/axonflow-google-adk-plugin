@@ -22,7 +22,7 @@ pre_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -t -A \
 
 # RUN: execute the agent test
 cd "$E2E_DIR"
-python "$SCRIPT_DIR/test_agent.py"
+python3 "$SCRIPT_DIR/test_agent.py"
 
 # ASSERT: no NEW audit_logs row for the sub-agent's inner_agent call.
 # This confirms the bypass bug: sub-agents via AgentTool are NOT governed.

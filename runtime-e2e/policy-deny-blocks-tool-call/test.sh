@@ -19,7 +19,7 @@ echo "  endpoint: $AXONFLOW_ENDPOINT"
 echo "  inserting deny policy..."
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -c "
 INSERT INTO static_policies (policy_id, name, category, pattern, severity, action, enabled, tenant_id, org_id)
-VALUES ('e2e-deny-tool', 'E2E deny test', 'dangerous_queries', 'disburse_payment', 'high', 'block', true, 'e2e-test', 'e2e-test')
+VALUES ('e2e-deny-tool', 'E2E deny test', 'security-dangerous', '.*disburse_payment.*', 'high', 'block', true, 'e2e-test', 'e2e-test')
 ON CONFLICT (policy_id) DO NOTHING;
 "
 
@@ -33,7 +33,7 @@ trap cleanup EXIT
 # RUN: execute the agent test (attempts to use the blocked tool)
 cd "$E2E_DIR"
 python_exit=0
-python "$SCRIPT_DIR/test_agent.py" > /tmp/policy-deny-output.log 2>&1 || python_exit=$?
+python3 "$SCRIPT_DIR/test_agent.py" > /tmp/policy-deny-output.log 2>&1 || python_exit=$?
 cat /tmp/policy-deny-output.log
 
 if [ "$python_exit" -ne 0 ]; then

@@ -184,7 +184,10 @@ jobs:
           DB_PASSWORD: localdev123
         run: |
           START_TIME=$(date +%s)
-          for test_dir in agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned; do
+          pip install mcp --quiet 2>/dev/null || true
+          # Community-mode tests only. require-approval-creates-hitl-row-and-polls
+          # requires enterprise agent (HITL endpoint is enterprise-only).
+          for test_dir in agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned; do
             echo "--- $test_dir ---"
             if [ -f "$test_dir/test.sh" ]; then
               bash "$test_dir/test.sh"
