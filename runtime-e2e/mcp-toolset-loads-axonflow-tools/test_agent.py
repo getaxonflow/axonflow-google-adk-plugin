@@ -1,13 +1,21 @@
 # Copyright 2026 AxonFlow
 # SPDX-License-Identifier: MIT
 
-"""Verify that axonflow_mcp_toolset() connects to a real MCP endpoint.
+"""Verify that axonflow_mcp_toolset() integrates into a real Runner.
 
-The AxonFlow agent exposes an MCP server at /mcp/. This test verifies
-that the `axonflow_mcp_toolset()` helper constructs a valid McpToolset
-that can be used with ADK. The test does not run a full agent (the MCP
-endpoint may not have connectors configured in community mode), but
-verifies the construction path and connection params.
+This test constructs an MCP toolset via `axonflow_mcp_toolset()` and
+registers it as a tool on an LlmAgent, then runs that agent through
+`Runner.run_async(...)` with `AxonFlowPlugin`.
+
+The community stack may not have MCP connectors configured, so the
+toolset's MCP connection may fail at runtime. The test verifies:
+
+  1. `axonflow_mcp_toolset()` constructs without error.
+  2. The toolset integrates into an LlmAgent without import issues.
+  3. Runner.run_async completes (the plugin fails-open if MCP is down).
+  4. The agent produces events (even if the MCP tools are unavailable).
+
+This replaces the construction-only test that never called Runner.run_async.
 """
 
 from __future__ import annotations
@@ -18,17 +26,19 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from google.adk.agents import LlmAgent
+from google.adk.runners import InMemoryRunner
+from google.genai import types as genai_types
+
+from axonflow_adk import AxonFlowPlugin, axonflow_mcp_toolset
+from axonflow_adk.plugin import AxonFlowPluginConfig
+from _lib.stub_model import TextOnlyStubModel
+
 
 async def main() -> int:
     endpoint = os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:18080")
 
-    # Test 1: Verify the helper constructs without error
-    try:
-        from axonflow_adk import axonflow_mcp_toolset
-    except ImportError as exc:
-        print(f"FAIL: cannot import axonflow_mcp_toolset: {exc}")
-        return 1
-
+    # Step 1: construct the MCP toolset
     try:
         toolset = axonflow_mcp_toolset(
             endpoint=endpoint,
@@ -44,20 +54,17 @@ async def main() -> int:
 
     print(f"  toolset created: {type(toolset).__name__}")
 
-    # Test 2: Verify connection params are correct
+    # Step 2: verify connection params
     conn_params = getattr(toolset, "connection_params", None)
-    if conn_params is None:
-        # Might be wrapped differently in newer ADK versions
-        print("  connection_params not directly accessible (OK)")
-    else:
+    if conn_params is not None:
         url = getattr(conn_params, "url", None)
-        headers = getattr(conn_params, "headers", None)
         if url:
             expected_url = endpoint.rstrip("/") + "/mcp/"
             if url != expected_url:
                 print(f"FAIL: URL mismatch: {url} != {expected_url}")
                 return 1
             print(f"  URL: {url}")
+        headers = getattr(conn_params, "headers", None)
         if headers:
             auth = headers.get("Authorization", "")
             if not auth.startswith("Basic "):
@@ -65,15 +72,84 @@ async def main() -> int:
                 return 1
             print("  auth: Basic ***")
 
-    # Test 3: Verify bearer token path
+    # Step 3: create agent with toolset and run through Runner.run_async.
+    # Use TextOnlyStubModel since we don't know what MCP tools are available
+    # and can't issue a targeted tool call.
+    plugin = AxonFlowPlugin(
+        endpoint=endpoint,
+        client_id="e2e-test",
+        client_secret="",
+        config=AxonFlowPluginConfig(
+            call_timeout_seconds=10.0,
+            default_user_token="e2e-user",
+            enable_hitl_polling=False,
+        ),
+    )
+
+    model = TextOnlyStubModel(text="I can see the AxonFlow MCP tools.")
+
+    agent = LlmAgent(
+        model=model,
+        name="e2e_mcp_agent",
+        instruction="You have access to AxonFlow MCP tools.",
+        tools=[toolset],
+    )
+
+    runner = InMemoryRunner(
+        agent=agent,
+        app_name="e2e_mcp_toolset_test",
+        plugins=[plugin],
+    )
+
+    session = await runner.session_service.create_session(
+        app_name="e2e_mcp_toolset_test",
+        user_id="e2e-user",
+    )
+
+    events = []
+    async for event in runner.run_async(
+        user_id="e2e-user",
+        session_id=session.id,
+        new_message=genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(text="What tools do you have?")],
+        ),
+    ):
+        events.append(event)
+        print(f"  event: {event}")
+
+    await plugin.aclose()
+
+    if not events:
+        print("FAIL: no events received from runner")
+        return 1
+
+    # Verify text output exists (agent completed)
+    has_text = False
+    for event in events:
+        content = getattr(event, "content", None)
+        if content is None:
+            continue
+        parts = getattr(content, "parts", None) or []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text and len(text) > 0:
+                has_text = True
+                print(f"  model output: {text[:200]}")
+
+    if not has_text:
+        print("FAIL: no text output from model")
+        return 1
+
+    # Step 4: verify bearer token path constructs correctly
     try:
         toolset_bearer = axonflow_mcp_toolset(
             endpoint=endpoint,
             bearer_token="test-bearer-token",
         )
-        conn_params_bearer = getattr(toolset_bearer, "connection_params", None)
-        if conn_params_bearer:
-            auth = getattr(conn_params_bearer, "headers", {}).get("Authorization", "")
+        cp = getattr(toolset_bearer, "connection_params", None)
+        if cp:
+            auth = getattr(cp, "headers", {}).get("Authorization", "")
             if not auth.startswith("Bearer "):
                 print(f"FAIL: expected Bearer auth, got: {auth[:20]}...")
                 return 1
@@ -81,9 +157,9 @@ async def main() -> int:
     except Exception as exc:
         print(f"  bearer path construction failed (non-fatal): {exc}")
 
-    # Test 4: Verify anonymous path (no auth)
+    # Step 5: verify anonymous path
     try:
-        toolset_anon = axonflow_mcp_toolset(endpoint=endpoint)
+        axonflow_mcp_toolset(endpoint=endpoint)
         print("  anonymous path: OK")
     except Exception as exc:
         print(f"FAIL: anonymous construction failed: {exc}")

@@ -23,7 +23,7 @@ cd runtime-e2e
 This will:
 1. Bring up Postgres + Redis + AxonFlow Agent via docker-compose
 2. Install the plugin from the local checkout
-3. Run all six test scenarios
+3. Run all ten test scenarios
 4. Print a PASS/FAIL/SKIP summary
 5. Tear down the stack
 
@@ -46,9 +46,13 @@ TESTS="agent-runs-with-plugin-registered audit-recorded-on-tool-success" ./run-a
 | `agent-runs-with-plugin-registered/` | Plugin registers on Runner, pre_check fires, agent completes |
 | `policy-deny-blocks-tool-call/` | Deny policy blocks tool execution |
 | `audit-recorded-on-tool-success/` | Successful tool calls emit audit_tool_call(success=True) |
-| `require-approval-creates-hitl-row-and-polls/` | HITL 4-step flow: gate, create row, poll, resume/deny |
-| `mcp-toolset-loads-axonflow-tools/` | axonflow_mcp_toolset() constructs valid McpToolset |
-| `agent-tool-bypass-gotcha-pinned/` | Documents AgentTool sub-agent isolation limitation |
+| `require-approval-creates-hitl-row-and-polls/` | HITL code path fires through Runner (fail-closed on community 404) |
+| `mcp-toolset-loads-axonflow-tools/` | axonflow_mcp_toolset() integrates into Runner.run_async |
+| `agent-tool-bypass-gotcha-pinned/` | AgentTool sub-agent governance through plugin propagation |
+| `on-tool-error-callback-fires/` | Tool error triggers on_tool_error_callback audit |
+| `sequential-runs-breaker-stable/` | 5 sequential runs, circuit breaker stays closed |
+| `breaker-opens-on-stack-down/` | Fail-open behavior when AxonFlow is unreachable |
+| `on-user-message-callback-fires/` | Multi-turn conversation, no-op callback does not interfere |
 
 ## AxonFlow agent image
 

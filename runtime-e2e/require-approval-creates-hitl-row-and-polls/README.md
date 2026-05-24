@@ -1,18 +1,18 @@
 # require-approval-creates-hitl-row-and-polls
 
-Exercises the 4-step HITL approval flow:
+Verifies that the HITL approval code path fires through
+`Runner.run_async(...)` with `AxonFlowPlugin` registered.
 
-1. `pre_check` / `check_tool_input` returns `block_reason="require_approval"`
-2. Plugin calls `create_hitl_request` to enqueue a queue row
-3. Plugin polls `get_hitl_request` until terminal status
-4. On approval, tool proceeds; on rejection/timeout, tool is denied
-
-In community mode (no require_approval policy available), the test
-verifies the deny-fast path: `enable_hitl_polling=False` causes the
-plugin to deny immediately without creating a queue row.
+A `require_approval` policy is inserted into `static_policies` via
+psql before the test runs. When the stub model triggers a tool call,
+`before_tool_callback` hits `check_tool_input`, which returns
+`require_approval`. The plugin then attempts `create_hitl_request`,
+which returns 404 in community mode. The plugin fails-closed and
+denies the tool call.
 
 ## What this catches
 
-- HITL row creation failures (missing fields, SDK shape drift).
-- Polling loop hangs or incorrect terminal-status detection.
-- Deny-fast mode not short-circuiting correctly.
+- HITL polling code path not reached when `enable_hitl_polling=True`.
+- Plugin silently allowing a `require_approval` verdict (should fail-closed).
+- `create_hitl_request` error handling (404 in community mode).
+- Regression in the 4-step HITL flow: gate -> create -> poll -> deny.

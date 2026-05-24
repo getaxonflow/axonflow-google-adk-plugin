@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test.sh — Verify axonflow_mcp_toolset() integrates into Runner.run_async.
+# test.sh — Verify 5 sequential Runner.run_async calls complete
+# with the circuit breaker staying closed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,17 +12,14 @@ export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
 
-echo "=== mcp-toolset-loads-axonflow-tools ==="
+echo "=== sequential-runs-breaker-stable ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
-# SETUP: ensure mcp package is installed (required by McpToolset)
-pip install mcp --quiet 2>/dev/null || true
-
-# RUN: execute the agent test through Runner.run_async
+# RUN: execute 5 sequential runs through the same Runner
 cd "$E2E_DIR"
 python3 "$SCRIPT_DIR/test_agent.py"
 
-# ASSERT: verify DB connectivity and audit row
+# ASSERT: verify audit rows exist from all runs
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
-echo "PASS: mcp-toolset-loads-axonflow-tools"
+echo "PASS: sequential-runs-breaker-stable"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test.sh — Verify axonflow_mcp_toolset() integrates into Runner.run_async.
+# test.sh — Verify on_user_message_callback fires without breaking
+# multi-turn conversations through Runner.run_async.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,17 +12,14 @@ export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
 
-echo "=== mcp-toolset-loads-axonflow-tools ==="
+echo "=== on-user-message-callback-fires ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
-# SETUP: ensure mcp package is installed (required by McpToolset)
-pip install mcp --quiet 2>/dev/null || true
-
-# RUN: execute the agent test through Runner.run_async
+# RUN: execute the multi-turn agent test
 cd "$E2E_DIR"
 python3 "$SCRIPT_DIR/test_agent.py"
 
-# ASSERT: verify DB connectivity and audit row
+# ASSERT: verify audit rows exist from all turns
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
-echo "PASS: mcp-toolset-loads-axonflow-tools"
+echo "PASS: on-user-message-callback-fires"

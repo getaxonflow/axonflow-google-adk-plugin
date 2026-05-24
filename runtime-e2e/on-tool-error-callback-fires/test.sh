@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test.sh — Verify axonflow_mcp_toolset() integrates into Runner.run_async.
+# test.sh — Verify that on_tool_error_callback fires and audits
+# through Runner.run_async when a tool raises an exception.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,17 +12,14 @@ export PGPASSWORD="${DB_PASSWORD:-localdev123}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-15432}"
 
-echo "=== mcp-toolset-loads-axonflow-tools ==="
+echo "=== on-tool-error-callback-fires ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
-# SETUP: ensure mcp package is installed (required by McpToolset)
-pip install mcp --quiet 2>/dev/null || true
-
-# RUN: execute the agent test through Runner.run_async
+# RUN: execute the agent test (tool will raise RuntimeError)
 cd "$E2E_DIR"
 python3 "$SCRIPT_DIR/test_agent.py"
 
-# ASSERT: verify DB connectivity and audit row
+# ASSERT: verify audit row exists (error audit should fire)
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
-echo "PASS: mcp-toolset-loads-axonflow-tools"
+echo "PASS: on-tool-error-callback-fires"

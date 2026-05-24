@@ -24,7 +24,7 @@ DB_USER="${DB_USER:-axonflow}"
 DB_PASSWORD="${DB_PASSWORD:-localdev123}"
 
 TEAR_DOWN=true
-ALL_TESTS="agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned"
+ALL_TESTS="agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned on-tool-error-callback-fires sequential-runs-breaker-stable breaker-opens-on-stack-down on-user-message-callback-fires"
 SELECTED_TESTS="${TESTS:-$ALL_TESTS}"
 
 for arg in "$@"; do
