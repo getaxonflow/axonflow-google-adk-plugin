@@ -46,6 +46,7 @@ async def main() -> int:
             request_type="adk-e2e-test",
             # Disable HITL polling for this basic registration test
             enable_hitl_polling=False,
+            breaker_failure_threshold=50,
         ),
     )
 

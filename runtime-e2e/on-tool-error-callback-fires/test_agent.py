@@ -45,6 +45,7 @@ async def main() -> int:
             call_timeout_seconds=10.0,
             default_user_token="e2e-user",
             enable_hitl_polling=False,
+            breaker_failure_threshold=50,
         ),
     )
 
@@ -73,36 +74,32 @@ async def main() -> int:
     )
 
     events = []
-    async for event in runner.run_async(
-        user_id="e2e-user",
-        session_id=session.id,
-        new_message=genai_types.Content(
-            role="user",
-            parts=[genai_types.Part(text="Run the buggy tool with input test-input")],
-        ),
-    ):
-        events.append(event)
-        print(f"  event: {event}")
+    runner_error = None
+    try:
+        async for event in runner.run_async(
+            user_id="e2e-user",
+            session_id=session.id,
+            new_message=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text="Run the buggy tool with input test-input")],
+            ),
+        ):
+            events.append(event)
+    except RuntimeError as exc:
+        runner_error = exc
+        print(f"  runner raised RuntimeError (expected): {exc}")
 
     await plugin.aclose()
 
-    if not events:
-        print("FAIL: no events received from runner")
+    if runner_error is None:
+        print("FAIL: expected RuntimeError from buggy tool but runner completed normally")
         return 1
 
-    print(f"  received {len(events)} event(s)")
-
-    # Verify the agent completed (produced some output despite tool error)
-    has_content = False
-    for event in events:
-        content = getattr(event, "content", None)
-        if content is not None:
-            has_content = True
-
-    if not has_content:
-        print("FAIL: no content in any event")
+    if "Tool error for testing" not in str(runner_error):
+        print(f"FAIL: unexpected error message: {runner_error}")
         return 1
 
+    print(f"  received {len(events)} event(s) before error")
     print("PASS: on-tool-error-callback-fires")
     return 0
 

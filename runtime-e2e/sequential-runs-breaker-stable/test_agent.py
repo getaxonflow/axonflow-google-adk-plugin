@@ -52,6 +52,9 @@ async def main() -> int:
             call_timeout_seconds=10.0,
             default_user_token="e2e-user",
             enable_hitl_polling=False,
+            # High threshold so audit_tool_call 502s (no orchestrator in
+            # community mode) don't trip the breaker during the 5-run test.
+            breaker_failure_threshold=50,
         ),
     )
 

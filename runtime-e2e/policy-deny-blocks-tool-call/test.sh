@@ -19,9 +19,22 @@ echo "  endpoint: $AXONFLOW_ENDPOINT"
 echo "  inserting deny policy..."
 psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -c "
 INSERT INTO static_policies (policy_id, name, category, pattern, severity, action, enabled, tenant_id, org_id)
-VALUES ('e2e-deny-tool', 'E2E deny test', 'security-dangerous', '.*disburse_payment.*', 'high', 'block', true, 'e2e-test', 'e2e-test')
+VALUES ('e2e-deny-tool', 'E2E deny test', 'security-dangerous', '.*disburse_payment.*', 'high', 'block', true, 'global', '')
 ON CONFLICT (policy_id) DO NOTHING;
 "
+
+# The policy engine caches policies at startup — restart the agent
+# so the new policy is loaded into the engine's in-memory cache.
+echo "  restarting agent to pick up new policy..."
+docker restart adk-e2e-agent > /dev/null 2>&1
+for i in $(seq 1 30); do
+  if curl -sf -o /dev/null --max-time 2 "$AXONFLOW_ENDPOINT/health" 2>/dev/null; then
+    echo "  agent restarted (${i}s)"
+    break
+  fi
+  if [ "$i" -eq 30 ]; then echo "FAIL: agent not healthy after restart"; exit 1; fi
+  sleep 1
+done
 
 cleanup() {
   echo "  cleaning up deny policy..."

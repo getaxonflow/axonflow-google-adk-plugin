@@ -56,6 +56,7 @@ async def main() -> int:
             call_timeout_seconds=10.0,
             default_user_token="e2e-user",
             enable_hitl_polling=False,
+            breaker_failure_threshold=50,
         ),
     )
 
@@ -80,7 +81,7 @@ async def main() -> int:
     # Outer agent: calls the inner agent via AgentTool
     outer_model = StubModel(
         tool_name="risk_assessor",
-        tool_args={},
+        tool_args={"request": "Check risk for entity ENT-007"},
         final_text="The risk assessment is complete.",
     )
 

@@ -59,6 +59,7 @@ async def main() -> int:
             default_user_token="e2e-user",
             request_type="adk-e2e-audit-test",
             enable_hitl_polling=False,
+            breaker_failure_threshold=50,
         ),
     )
 

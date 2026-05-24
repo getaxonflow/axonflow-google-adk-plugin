@@ -51,6 +51,7 @@ async def main() -> int:
             call_timeout_seconds=10.0,
             default_user_token="e2e-user",
             enable_hitl_polling=False,
+            breaker_failure_threshold=50,
         ),
     )
 
