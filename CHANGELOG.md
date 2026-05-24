@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-05-24
+
+### Fixed (caught by runtime E2E)
+
+- Reverted false bug fixes from v1.0.1: `pre_check` does not accept
+  `tenant_id`/`request_type`, `audit_llm_call` does not accept `user_token`
+  (SDK TypeError surfaced by real `Runner.run_async` tests).
+- `StubModel` for runtime E2E: correct `BaseLlm` interface (AsyncGenerator,
+  positional `llm_request` arg, import from `google.adk.models.base_llm`).
+
+### Added
+
+- Runtime E2E expanded from 6 to 10 tests. Every test exercises the customer
+  entry point: `Runner(agent=..., plugins=[AxonFlowPlugin(...)]).run_async(...)`.
+- New tests: `on-tool-error-callback-fires`, `sequential-runs-breaker-stable`,
+  `breaker-opens-on-stack-down`, `on-user-message-callback-fires`.
+- Rewritten tests: HITL test uses real Runner (was raw SDK call), AgentTool test
+  contains real `AgentTool` (was vacuous), MCP toolset test runs through Runner
+  (was construction-only).
+
 ## [1.0.1] - 2026-05-24
 
 ### Fixed (caught by runtime E2E)
