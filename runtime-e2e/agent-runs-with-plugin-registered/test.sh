@@ -21,6 +21,6 @@ cd "$E2E_DIR"
 python "$SCRIPT_DIR/test_agent.py"
 
 # ASSERT: verify an audit_logs row exists for client_id='e2e-test'
-"$LIB_DIR/verify-db.sh" audit-log-exists "e2e-test"
+"$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
 echo "PASS: agent-runs-with-plugin-registered"

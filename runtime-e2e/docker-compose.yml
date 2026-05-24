@@ -57,6 +57,7 @@ services:
       DEPLOYMENT_KIND: dev
       LOG_LEVEL: debug
       REDIS_URL: redis://redis:6379
+      AXONFLOW_DB_USE_APP_ROLE: "false"
       AXONFLOW_TELEMETRY: "off"
       CI: "true"
     ports:

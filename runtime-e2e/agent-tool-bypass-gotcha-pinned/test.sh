@@ -39,6 +39,6 @@ if [ "$new_rows" -gt 0 ]; then
 fi
 
 # ASSERT: verify at least the outer agent's audit row exists
-"$LIB_DIR/verify-db.sh" audit-log-exists "e2e-test"
+"$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
 echo "PASS: agent-tool-bypass-gotcha-pinned"

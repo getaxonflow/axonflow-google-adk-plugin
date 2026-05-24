@@ -741,8 +741,6 @@ class AxonFlowPlugin(BasePlugin):
                 user_token=user_token,
                 query=query,
                 context=context,
-                tenant_id=self._config.tenant_id,
-                request_type=self._config.request_type,
             )
 
         result = await self._call_with_guard(
@@ -835,8 +833,6 @@ class AxonFlowPlugin(BasePlugin):
             token_usage = TokenUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
         provider = self._infer_provider(model_name)
 
-        user_token = self._user_token(callback_context)
-
         async def _do_audit() -> Any:
             client = await self._get_client()
             return await client.audit_llm_call(
@@ -846,7 +842,6 @@ class AxonFlowPlugin(BasePlugin):
                 model=str(model_name),
                 token_usage=token_usage,
                 latency_ms=latency_ms,
-                user_token=user_token,
             )
 
         # Audit failures must never break the agent.

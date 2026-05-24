@@ -9,25 +9,13 @@ cycles through a predetermined response sequence:
   1. First call: returns a function_call to a specified tool with given args.
   2. Second call (after tool result): returns a text response.
 
-Usage:
-    from runtime_e2e._lib.stub_model import StubModel
-
-    model = StubModel(
-        tool_name="get_balance",
-        tool_args={"account_id": "ACC-001"},
-        final_text="The balance is $1,000.",
-    )
-    agent = LlmAgent(model=model, ...)
-
-ADK's LlmAgent accepts either a string (model name looked up in the
-registry) or a BaseLlm instance. We extend BaseLlm so the agent can use
-the instance directly without registry lookup.
+ADK's BaseLlm.generate_content_async is an AsyncGenerator that yields
+LlmResponse objects. The stub mirrors this interface exactly.
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
@@ -36,6 +24,11 @@ from google.genai import types as genai_types
 
 class StubModel(BaseLlm):
     """Deterministic model that returns a tool call then a text response."""
+
+    _tool_name: str = "get_balance"
+    _tool_args: dict[str, Any] = {}
+    _final_text: str = "Done."
+    _call_count: int = 0
 
     def __init__(
         self,
@@ -51,25 +44,13 @@ class StubModel(BaseLlm):
         self._final_text = final_text
         self._call_count = 0
 
-    @property
-    def model(self) -> str:
-        return self._model_name if hasattr(self, "_model_name") else "stub-model"
-
-    @model.setter
-    def model(self, value: str) -> None:
-        self._model_name = value
-
     async def generate_content_async(
-        self,
-        *,
-        llm_request: Any,
-        **kwargs: Any,
-    ) -> LlmResponse:
+        self, llm_request: Any = None, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
         self._call_count += 1
 
         if self._call_count == 1:
-            # First call: return a function call
-            return LlmResponse(
+            yield LlmResponse(
                 content=genai_types.Content(
                     role="model",
                     parts=[
@@ -83,28 +64,18 @@ class StubModel(BaseLlm):
                 )
             )
         else:
-            # Subsequent calls: return text
-            return LlmResponse(
+            yield LlmResponse(
                 content=genai_types.Content(
                     role="model",
                     parts=[genai_types.Part(text=self._final_text)],
                 )
             )
 
-    async def generate_content_stream(
-        self,
-        *,
-        llm_request: Any,
-        **kwargs: Any,
-    ) -> AsyncIterator[LlmResponse]:
-        response = await self.generate_content_async(
-            llm_request=llm_request, **kwargs
-        )
-        yield response
-
 
 class TextOnlyStubModel(BaseLlm):
     """Stub model that returns only text (no tool calls)."""
+
+    _text: str = "Hello, I am a test agent."
 
     def __init__(
         self,
@@ -116,25 +87,11 @@ class TextOnlyStubModel(BaseLlm):
         self._text = text
 
     async def generate_content_async(
-        self,
-        *,
-        llm_request: Any,
-        **kwargs: Any,
-    ) -> LlmResponse:
-        return LlmResponse(
+        self, llm_request: Any = None, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        yield LlmResponse(
             content=genai_types.Content(
                 role="model",
                 parts=[genai_types.Part(text=self._text)],
             )
         )
-
-    async def generate_content_stream(
-        self,
-        *,
-        llm_request: Any,
-        **kwargs: Any,
-    ) -> AsyncIterator[LlmResponse]:
-        response = await self.generate_content_async(
-            llm_request=llm_request, **kwargs
-        )
-        yield response

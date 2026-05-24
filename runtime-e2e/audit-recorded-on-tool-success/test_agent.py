@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
+from google.genai import types as genai_types
 
 from axonflow_adk import AxonFlowPlugin
 from axonflow_adk.plugin import AxonFlowPluginConfig
@@ -89,7 +90,7 @@ async def main() -> int:
     async for event in runner.run_async(
         user_id="e2e-user",
         session_id=session.id,
-        new_message="Look up customer CUST-001",
+        new_message=genai_types.Content(role="user", parts=[genai_types.Part(text="Look up customer CUST-001")]),
     ):
         events.append(event)
         print(f"  event: {event}")

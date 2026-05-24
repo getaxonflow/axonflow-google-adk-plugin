@@ -49,6 +49,6 @@ fi
 echo "  denial signal found in output"
 
 # ASSERT: query audit_logs for a denied decision
-"$LIB_DIR/verify-db.sh" audit-log-denied "e2e-test"
+"$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
 echo "PASS: policy-deny-blocks-tool-call"

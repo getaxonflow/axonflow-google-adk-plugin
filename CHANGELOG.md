@@ -10,20 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (caught by runtime E2E)
 
-- `before_model_callback`: `pre_check` now passes `tenant_id` from plugin
-  config, matching `before_tool_callback` which already did. Without this,
-  model-level governance used the SDK default tenant while tool-level
-  governance used the configured tenant.
-- `before_model_callback`: `pre_check` now passes `request_type` from plugin
-  config. The field was declared on `AxonFlowPluginConfig` but never
-  propagated to the SDK call, so audit-log filtering by request type did
-  not work for model-level checks.
-- `after_model_callback`: `audit_llm_call` now passes `user_token` so
-  audit rows are attributed to the user who triggered the model call.
 - `after_tool_callback`: successful tool calls now emit an
   `audit_tool_call(success=True)` entry. Previously only
   `on_tool_error_callback` recorded audit rows, leaving successful tool
   calls without an explicit audit trail.
+- `StubModel` for runtime E2E uses correct `BaseLlm` interface
+  (`AsyncGenerator`, positional `llm_request` arg). Previous stub used
+  wrong import path and keyword-only signature.
 
 ### Added
 
