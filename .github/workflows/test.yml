@@ -48,6 +48,30 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
+  sdk-wire-contract:
+    # Proves the caller_name dual-send actually reaches the audit wire body,
+    # against the REAL axonflow SDK serializer (tests/ stubs the SDK type).
+    # caller_name is unreleased on PyPI, so install the caller_name-capable
+    # SDK from a pinned git build; swap for the PyPI release (and bump the
+    # `axonflow` runtime pin) once that SDK ships. Nothing here skips.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install plugin + caller_name-capable SDK (pinned git build)
+        run: |
+          pip install -e ".[dev]"
+          pip install --force-reinstall --no-deps \
+            "axonflow @ git+https://github.com/getaxonflow/axonflow-sdk-python.git@5d1809e"
+
+      - name: Verify caller_name reaches the audit wire body
+        run: pytest tests-sdk-wire/ -v --tb=short
+
   build-check:
     runs-on: ubuntu-latest
     steps:
