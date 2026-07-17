@@ -1029,6 +1029,14 @@ class AxonFlowPlugin(BasePlugin):
             try:
                 audit_request = AuditToolCallRequest(
                     tool_name=tool_name,
+                    # Client identity. `caller_name` is the current field;
+                    # `tool_type` is the deprecated fallback the platform still
+                    # honors (precedence: caller_name > tool_type > default).
+                    # Dual-send both during the deprecation window: correct on
+                    # platforms with caller_name support (v9.11.0+) and an SDK
+                    # that serializes it, unchanged on older platforms/SDKs
+                    # (which silently drop the unknown field).
+                    caller_name="adk-tool",
                     tool_type="adk-tool",
                     input=scrubbed,
                     user_id=user_token,
@@ -1107,6 +1115,9 @@ class AxonFlowPlugin(BasePlugin):
         try:
             request = AuditToolCallRequest(
                 tool_name=tool_name,
+                # Dual-send client identity: caller_name (current) + tool_type
+                # (deprecated fallback). See after_tool_callback for details.
+                caller_name="adk-tool",
                 tool_type="adk-tool",
                 input=scrubbed,
                 user_id=user_token,

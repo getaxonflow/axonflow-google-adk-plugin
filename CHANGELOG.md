@@ -4,7 +4,25 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-18
+
+### Changed
+
+- The tool-call audit path (success and error) now dual-sends `caller_name`
+  (the current client-identity field) alongside the deprecated `tool_type` on
+  the `AuditToolCallRequest`. Both keep the literal value `adk-tool`. Platforms
+  with `caller_name` support (v9.11.0+) attribute from `caller_name`; older
+  platforms continue to read `tool_type` (precedence: `caller_name` >
+  `tool_type` > default), so attribution is correct on both.
+
+### Notes
+
+- `caller_name` is serialized by the `axonflow` SDK; it is a no-op on SDK builds
+  that predate the field (the extra kwarg is silently dropped, `tool_type` is
+  used). **Release is gated on the caller_name-capable `axonflow` SDK shipping
+  to PyPI:** at release, bump the `axonflow` runtime pin to that version and
+  point the `sdk-wire-contract` CI job at the released SDK instead of the pinned
+  git build.
 
 ## [1.0.2] - 2026-05-24
 

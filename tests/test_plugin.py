@@ -465,6 +465,9 @@ async def test_on_tool_error_audits_does_not_block(fake_client, tool_context, fa
     assert req.tool_name == "disburse_payment"
     assert req.success is False
     assert "downstream timeout" in req.error_message
+    # Dual-send client identity on the error-audit path as well.
+    assert req.caller_name == "adk-tool"
+    assert req.tool_type == "adk-tool"
 
 
 # ---------------------------------------------------------------------------
@@ -1058,6 +1061,12 @@ async def test_after_tool_success_audit_fires(fake_client, tool_context, fake_to
     assert req.success is True
     assert req.tool_name == "disburse_payment"
     assert req.error_message is None
+    # Dual-send client identity: caller_name is the current field, tool_type
+    # the deprecated fallback. Both must be set on the request the plugin
+    # hands to the SDK so attribution is correct on new platforms and
+    # unchanged on old (precedence: caller_name > tool_type > default).
+    assert req.caller_name == "adk-tool"
+    assert req.tool_type == "adk-tool"
 
 
 async def test_after_tool_success_audit_uses_redactor(
