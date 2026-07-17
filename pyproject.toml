@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axonflow-google-adk-plugin"
-version = "1.0.2"
+version = "1.1.0"
 description = "AxonFlow governance plugin for Google Agent Development Kit (ADK)"
 readme = "README.md"
 license = {text = "MIT"}
