@@ -22,13 +22,13 @@ approval, denial short-circuits, and an audit trail.
 """
 
 from axonflow_adk._version import __version__
-from axonflow_adk.plugin import AxonFlowPlugin, ApprovalTimeout, ApprovalRejected
 from axonflow_adk.mcp_helper import axonflow_mcp_toolset
+from axonflow_adk.plugin import ApprovalRejected, ApprovalTimeout, AxonFlowPlugin
 
 __all__ = [
-    "__version__",
     "ApprovalRejected",
     "ApprovalTimeout",
     "AxonFlowPlugin",
+    "__version__",
     "axonflow_mcp_toolset",
 ]
