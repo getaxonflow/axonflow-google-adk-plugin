@@ -91,6 +91,33 @@ def _install_minimal_adk_stub() -> None:
     sys.modules["google.adk.models"] = models_pkg
     sys.modules["google.adk.models.llm_response"] = llm_response_mod
 
+    # The MCP toolset boundary, stubbed on the same terms as the rest: the
+    # helper's job is deciding WHICH headers to hand to ADK, and a capturing
+    # stub is what lets a test read that decision. The real ADK types are not
+    # exercised here - `runtime-e2e/` drives the real toolset against a live
+    # platform, which is where the wire is proven.
+    class _StreamableHTTPConnectionParams:  # noqa: N801  (mirrors the ADK name)
+        def __init__(self, url: str, headers: Any = None, **kwargs: Any) -> None:
+            self.url = url
+            self.headers = headers
+            self.kwargs = kwargs
+
+    class _McpToolset:  # noqa: N801  (mirrors the ADK name)
+        def __init__(self, connection_params: Any = None, **kwargs: Any) -> None:
+            self.connection_params = connection_params
+            self.kwargs = kwargs
+
+    tools_pkg = types.ModuleType("google.adk.tools")
+    mcp_tool_mod = types.ModuleType("google.adk.tools.mcp_tool")
+    mcp_tool_mod.McpToolset = _McpToolset
+    session_mgr_mod = types.ModuleType("google.adk.tools.mcp_tool.mcp_session_manager")
+    session_mgr_mod.StreamableHTTPConnectionParams = _StreamableHTTPConnectionParams
+    tools_pkg.mcp_tool = mcp_tool_mod
+    adk.tools = tools_pkg
+    sys.modules["google.adk.tools"] = tools_pkg
+    sys.modules["google.adk.tools.mcp_tool"] = mcp_tool_mod
+    sys.modules["google.adk.tools.mcp_tool.mcp_session_manager"] = session_mgr_mod
+
 
 def _install_minimal_axonflow_stub() -> None:
     """Stub `axonflow` + `axonflow.types` if the SDK isn't on sys.path.

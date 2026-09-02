@@ -165,6 +165,14 @@ agent = LlmAgent(
 )
 ```
 
+### Client identification
+
+Every call this helper makes carries `X-Axonflow-Client: google-adk-plugin/<version>`, so AxonFlow can tell ADK adoption apart from any other caller. The version comes from the installed package's own metadata.
+
+**What this is and is not.** It is attribution on a request the platform already receives — no additional request is made, and **this integration sends no heartbeat or telemetry ping of its own**. It is never used for authentication: the platform authenticates on the `Authorization` header, so a missing or mangled value cannot fail a call. Nothing about your prompts, tool arguments, policy data, or identity is added.
+
+The header is applied after `extra_headers`, so a caller cannot make this integration claim to be something else.
+
 ## Run the example
 
 ```bash
