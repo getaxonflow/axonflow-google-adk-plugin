@@ -21,7 +21,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install ruff
-        run: pip install ruff
+        # PINNED. An unpinned `pip install ruff` means a new ruff release
+        # reds every PR in this repo for rules nobody in the PR touched - which
+        # is exactly what happened when 0.16 added PYI034/PYI036/RUF022 and
+        # main went red without a code change. A bump is now a deliberate edit.
+        run: pip install 'ruff>=0.16,<0.17'
 
       - name: Lint
         run: ruff check axonflow_adk/

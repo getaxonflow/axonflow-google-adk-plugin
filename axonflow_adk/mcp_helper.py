@@ -24,6 +24,16 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+from axonflow_adk._version import __version__
+
+#: ADR-050 §4: every governed request carries `X-Axonflow-Client:
+#: <id>/<version>` so the platform can attribute it. The id is the
+#: `<name>-plugin` form the server's plugin vocabulary uses; an id the server
+#: does not know is dropped SILENTLY, so this string and the platform's
+#: allowlist have to move together (enterprise#3672).
+AXONFLOW_CLIENT_HEADER = "X-Axonflow-Client"
+AXONFLOW_CLIENT_VALUE = f"google-adk-plugin/{__version__}"
+
 
 def axonflow_mcp_toolset(
     endpoint: str,
@@ -59,7 +69,9 @@ def axonflow_mcp_toolset(
         mcp_path: Path component of the AxonFlow MCP endpoint. Defaults
             to `/mcp/` which is the agent's canonical path.
         extra_headers: Optional additional headers (tenant scoping,
-            tracing context) merged into the connection params.
+            tracing context) merged into the connection params. Cannot
+            override `X-Axonflow-Client`, which identifies this integration
+            to the platform and is applied last.
 
     Returns:
         `McpToolset` ready to drop into `LlmAgent(tools=[...])`.
@@ -80,6 +92,22 @@ def axonflow_mcp_toolset(
         headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
     if extra_headers:
         headers.update(extra_headers)
+
+    # ADR-050 §4 client identification, set LAST so `extra_headers` cannot
+    # replace it. Before this, calls from this integration reached the platform
+    # carrying no identity at all, so ADK adoption was invisible to the
+    # client-version counter, the checkpoint pipeline and the Community-SaaS
+    # stream simultaneously - indistinguishable from an anonymous caller.
+    #
+    # This is attribution, never authentication: the platform authenticates on
+    # the Authorization header above and MUST ignore this one for that purpose,
+    # so a missing or mangled value can never fail a call. It rides a request
+    # the platform already receives - no new request, and no heartbeat is added
+    # by this integration.
+    #
+    # The version comes from the package's own metadata, never a literal, so it
+    # cannot drift from what was installed.
+    headers[AXONFLOW_CLIENT_HEADER] = AXONFLOW_CLIENT_VALUE
 
     url = endpoint.rstrip("/") + mcp_path
     return McpToolset(

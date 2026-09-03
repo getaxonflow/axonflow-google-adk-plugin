@@ -55,11 +55,15 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
+    from axonflow import AxonFlow
     from google.adk.agents.callback_context import CallbackContext
     from google.adk.agents.invocation_context import InvocationContext
     from google.adk.models.llm_request import LlmRequest
@@ -68,17 +72,15 @@ if TYPE_CHECKING:
     from google.adk.tools.tool_context import ToolContext
     from google.genai import types as genai_types
 
-    from axonflow import AxonFlow
-
 # google-adk + axonflow are hard runtime dependencies. We import at module
 # scope so subclass attribution is correct under the framework's plugin
 # discovery, and so import failures surface at agent boot rather than at
 # the first hook call (where they could otherwise bypass `_call_with_guard`
 # and break the agent).
-from google.adk.plugins.base_plugin import BasePlugin  # noqa: E402
-from google.adk.models.llm_response import LlmResponse  # noqa: E402
-from google.genai import types as genai_types  # noqa: E402
-from axonflow.types import AuditToolCallRequest, TokenUsage  # noqa: E402
+from axonflow.types import AuditToolCallRequest, TokenUsage
+from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.genai import types as genai_types
 
 # State keys are prefixed with `temp:` (the ADK convention) so they do
 # NOT persist to long-term session state across invocations
@@ -354,10 +356,19 @@ class AxonFlowPlugin(BasePlugin):
         except Exception as exc:  # noqa: BLE001 - never raise out of cleanup
             logger.warning("axonflow client close failed: %s", exc)
 
-    async def __aenter__(self) -> AxonFlowPlugin:
+    async def __aenter__(self) -> AxonFlowPlugin:  # noqa: PYI034 - see below
+        # PYI034 asks for `Self` so a subclass's `async with` narrows to the
+        # subclass. This class is a concrete ADK plugin, not a base, and `Self`
+        # needs `typing_extensions` on the 3.10 the test matrix still covers -
+        # a dependency for an annotation no caller here benefits from.
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self.aclose()
 
     # ----- Internal helpers ---------------------------------------------
