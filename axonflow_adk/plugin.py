@@ -54,6 +54,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -78,6 +79,12 @@ if TYPE_CHECKING:
 # the first hook call (where they could otherwise bypass `_call_with_guard`
 # and break the agent).
 from axonflow.types import AuditToolCallRequest, TokenUsage
+
+from axonflow_adk.pep_handshake import (
+    PEP_HANDSHAKE_HEADER,
+    PepHandshakes,
+    build_pep_handshakes,
+)
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types as genai_types
@@ -216,6 +223,20 @@ class AxonFlowPluginConfig:
     # Optional callback that scrubs sensitive fields from tool_args BEFORE
     # they are sent to `audit_tool_call`. Default: send as-is.
     argument_redactor: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    # ADR-065 capability handshake audience
+    # (getaxonflow/axonflow-enterprise#3763).
+    #
+    # SET AS `AXONFLOW_PEP_AUDIENCE`, or passed here. Both names matter: the
+    # environment variable is what an operator sets and this field is what a
+    # reader of the code finds.
+    #
+    # UNSET IS THE DEFAULT AND SENDS NO HEADER, leaving the plugin behaving
+    # byte for byte as before. Opt-in because on an Enterprise platform the
+    # transition it gates on the REQUEST path is ALLOW -> DENY: that path
+    # performs no substitution, so it declares nothing and the platform refuses
+    # rather than allowing on the strength of a substitution it does not
+    # perform. See axonflow_adk/pep_handshake.py.
+    pep_audience: str | None = None
 
     def __post_init__(self) -> None:
         # surface configuration mistakes at construction time
@@ -230,6 +251,9 @@ class AxonFlowPluginConfig:
             raise ValueError("breaker_failure_threshold must be > 0")
         if self.breaker_recovery_seconds <= 0:
             raise ValueError("breaker_recovery_seconds must be > 0")
+
+
+_PEP_UNSET = object()
 
 
 class AxonFlowPlugin(BasePlugin):
@@ -307,6 +331,8 @@ class AxonFlowPlugin(BasePlugin):
         self._client_id = client_id
         self._client_secret = client_secret
         self._client_lock = asyncio.Lock()
+        # Built on first use; see _pep_handshakes.
+        self._pep_handshakes_cache: PepHandshakes | None | object = _PEP_UNSET
         self._breaker = _CircuitBreaker(
             failure_threshold=cfg.breaker_failure_threshold,
             recovery_seconds=cfg.breaker_recovery_seconds,
@@ -372,6 +398,40 @@ class AxonFlowPlugin(BasePlugin):
         await self.aclose()
 
     # ----- Internal helpers ---------------------------------------------
+
+    def _pep_handshakes(self) -> PepHandshakes | None:
+        """The two declarations this plugin presents, built once.
+
+        Cached on the instance rather than rebuilt per call: a declaration is a
+        property of the build and the deployment, not of a request. Built
+        lazily so a malformed audience raises at the first governed call rather
+        than at import.
+
+        env wins over config, the same precedence every other credential-shaped
+        value on this surface uses.
+        """
+        if self._pep_handshakes_cache is _PEP_UNSET:
+            audience = os.environ.get("AXONFLOW_PEP_AUDIENCE", "").strip() or self._config.pep_audience
+            self._pep_handshakes_cache = build_pep_handshakes(audience)
+        return self._pep_handshakes_cache
+
+    def _pep_headers(self, which: str) -> dict[str, str] | None:
+        """Headers for one governed call, or None.
+
+        `which` selects the enforcement point: "request" for the tool-input
+        path, "response" for the tool-output path. They declare DIFFERENT
+        capability sets and must not be interchanged - see
+        axonflow_adk/pep_handshake.py for why one document for both would
+        misdescribe one of them.
+
+        Returns None rather than an empty dict when unconfigured, so no header
+        is sent at all: a header PRESENT with an empty value is MALFORMED to
+        the platform and refuses the request, which an ABSENT header does not.
+        """
+        handshakes = self._pep_handshakes()
+        if handshakes is None:
+            return None
+        return {PEP_HANDSHAKE_HEADER: getattr(handshakes, which)}
 
     async def _get_client(self) -> AxonFlow:
         if self._client is not None:
@@ -920,6 +980,10 @@ class AxonFlowPlugin(BasePlugin):
         async def _do_check() -> Any:
             client = await self._get_client()
             return await client.check_tool_input(
+                # The REQUEST enforcement point's declaration. Per-call rather
+                # than a client default, because this plugin's two paths
+                # declare different capability sets (SDK >= 9.3.0).
+                extra_headers=self._pep_headers("request"),
                 connector_type=self._config.tool_connector_type,
                 statement=tool_name,
                 operation="execute",
@@ -1013,6 +1077,11 @@ class AxonFlowPlugin(BasePlugin):
         async def _do_check() -> Any:
             client = await self._get_client()
             return await client.check_tool_output(
+                # The RESPONSE enforcement point's declaration. This path
+                # substitutes the platform's redacted_message back into the
+                # tool result, so it declares field_redact@1 - a different set
+                # from the request path's.
+                extra_headers=self._pep_headers("response"),
                 connector_type=self._config.tool_connector_type,
                 message=result_text,
                 metadata={"tool_name": tool_name},
