@@ -79,15 +79,15 @@ if TYPE_CHECKING:
 # the first hook call (where they could otherwise bypass `_call_with_guard`
 # and break the agent).
 from axonflow.types import AuditToolCallRequest, TokenUsage
+from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.genai import types as genai_types
 
 from axonflow_adk.pep_handshake import (
     PEP_HANDSHAKE_HEADER,
     PepHandshakes,
     build_pep_handshakes,
 )
-from google.adk.models.llm_response import LlmResponse
-from google.adk.plugins.base_plugin import BasePlugin
-from google.genai import types as genai_types
 
 # State keys are prefixed with `temp:` (the ADK convention) so they do
 # NOT persist to long-term session state across invocations

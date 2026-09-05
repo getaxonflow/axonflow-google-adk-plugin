@@ -80,8 +80,16 @@ def test_an_empty_declaration_serialises_as_an_empty_array():
 def test_no_identity_or_entitlement_member_reaches_the_wire():
     # A PEP may declare what it CAN DO, never who it is or what it is entitled
     # to, and the platform refuses an unknown member outright.
-    for encoded in (build_pep_handshakes(AUDIENCE).request, build_pep_handshakes(AUDIENCE).response):
-        assert set(_decode(encoded)) == {"profile_version", "pep_id", "audience", "capabilities"}
+    for encoded in (
+        build_pep_handshakes(AUDIENCE).request,
+        build_pep_handshakes(AUDIENCE).response,
+    ):
+        assert set(_decode(encoded)) == {
+            "profile_version",
+            "pep_id",
+            "audience",
+            "capabilities",
+        }
 
 
 def test_no_audience_presents_nothing_at_all():
@@ -89,7 +97,9 @@ def test_no_audience_presents_nothing_at_all():
     assert build_pep_handshakes("") is None
 
 
-@pytest.mark.parametrize("bad", ["has spaces", "-leading-hyphen", "a" * 129, "trailing\n"])
+@pytest.mark.parametrize(
+    "bad", ["has spaces", "-leading-hyphen", "a" * 129, "trailing\n"]
+)
 def test_a_malformed_audience_raises_rather_than_silently_disabling(bad):
     # A value that quietly disabled the handshake would leave an operator
     # believing a control was in force when it was not.
@@ -98,14 +108,22 @@ def test_a_malformed_audience_raises_rather_than_silently_disabling(bad):
 
 
 def test_capabilities_are_sorted_canonically():
-    a = encode_handshake("p", AUDIENCE, [
-        {"type": "immutable_audit", "version": 1},
-        {"type": "field_redact", "version": 1},
-    ])
-    b = encode_handshake("p", AUDIENCE, [
-        {"type": "field_redact", "version": 1},
-        {"type": "immutable_audit", "version": 1},
-    ])
+    a = encode_handshake(
+        "p",
+        AUDIENCE,
+        [
+            {"type": "immutable_audit", "version": 1},
+            {"type": "field_redact", "version": 1},
+        ],
+    )
+    b = encode_handshake(
+        "p",
+        AUDIENCE,
+        [
+            {"type": "field_redact", "version": 1},
+            {"type": "immutable_audit", "version": 1},
+        ],
+    )
     assert a == b
 
 

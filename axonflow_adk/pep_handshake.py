@@ -98,7 +98,9 @@ class PepHandshakes:
     response: str
 
 
-def encode_handshake(pep_id: str, audience: str, capabilities: list[dict[str, object]]) -> str:
+def encode_handshake(
+    pep_id: str, audience: str, capabilities: list[dict[str, object]]
+) -> str:
     """Render one declaration as the header value.
 
     Raises ``ValueError`` on a malformed audience or an over-long document,
@@ -164,6 +166,8 @@ def build_pep_handshakes(audience: str | None) -> PepHandshakes | None:
         # The response path round-trips the platform's redacted_message back
         # into the tool result, so it does discharge the obligation.
         response=encode_handshake(
-            PEP_ID_RESPONSE, audience, [{"type": CAP_FIELD_REDACT, "version": CAP_SCHEMA_V1}]
+            PEP_ID_RESPONSE,
+            audience,
+            [{"type": CAP_FIELD_REDACT, "version": CAP_SCHEMA_V1}],
         ),
     )
