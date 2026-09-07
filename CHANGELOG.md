@@ -4,6 +4,17 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-05
+
+### Added
+
+- **The plugin now declares what it can enforce** (ADR-065 capability handshake; getaxonflow/axonflow-enterprise#3763). Set `AXONFLOW_PEP_AUDIENCE` (or `pep_audience` on the plugin config) to the audience your decision proofs are bound to, and every governed call carries `X-Axonflow-PEP-Handshake`. A platform running v10.4.0 or later that would attach a mandatory obligation this plugin has declared it cannot carry out refuses the request instead of handing the content over and assuming the plugin will cope. Unset, the default, sends no header and nothing changes.
+- **This plugin is TWO enforcement points and declares itself as two.** The response path discharges a redaction: `_check_tool_output` round-trips the platform's `redacted_message` back into the tool result, so it declares `field_redact@1`. The request path does not: `_check_tool_input` returns `None` on an allow and the original `tool_args` proceed unchanged, so it declares nothing, under its own name. A declaration describes what a path can do rather than what it should do, and declaring `field_redact` on the request path would tell the platform to allow the call on the strength of a substitution that path does not perform.
+
+### Changed
+
+- **Requires `axonflow>=9.3.0`.** The two declarations are presented through the SDK's per-call `extra_headers`, which that release adds. A process-wide default header could not express this plugin's two paths, because it can only carry one document.
+
 ## [1.1.0] - 2026-07-18
 
 ### Changed
