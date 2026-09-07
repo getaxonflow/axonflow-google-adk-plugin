@@ -110,12 +110,20 @@ def _install_minimal_adk_stub() -> None:
     tools_pkg = types.ModuleType("google.adk.tools")
     mcp_tool_mod = types.ModuleType("google.adk.tools.mcp_tool")
     mcp_tool_mod.McpToolset = _McpToolset
+    # The helper imports from the DEFINING module, not the package, so the
+    # real ADK's swallowed-ImportError `__init__` cannot hide the cause; the
+    # stub mirrors that layout.
+    mcp_toolset_mod = types.ModuleType("google.adk.tools.mcp_tool.mcp_toolset")
+    mcp_toolset_mod.McpToolset = _McpToolset
     session_mgr_mod = types.ModuleType("google.adk.tools.mcp_tool.mcp_session_manager")
     session_mgr_mod.StreamableHTTPConnectionParams = _StreamableHTTPConnectionParams
     tools_pkg.mcp_tool = mcp_tool_mod
+    mcp_tool_mod.mcp_toolset = mcp_toolset_mod
+    mcp_tool_mod.mcp_session_manager = session_mgr_mod
     adk.tools = tools_pkg
     sys.modules["google.adk.tools"] = tools_pkg
     sys.modules["google.adk.tools.mcp_tool"] = mcp_tool_mod
+    sys.modules["google.adk.tools.mcp_tool.mcp_toolset"] = mcp_toolset_mod
     sys.modules["google.adk.tools.mcp_tool.mcp_session_manager"] = session_mgr_mod
 
 

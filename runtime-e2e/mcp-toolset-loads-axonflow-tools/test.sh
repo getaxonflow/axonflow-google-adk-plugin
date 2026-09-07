@@ -14,8 +14,10 @@ DB_PORT="${DB_PORT:-15432}"
 echo "=== mcp-toolset-loads-axonflow-tools ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
-# SETUP: ensure mcp package is installed (required by McpToolset)
-pip install mcp --quiet 2>/dev/null || true
+# No side-install of `mcp` here. The wheel under test declares
+# `google-adk[mcp]`, so the installed environment is the customer's; an
+# unpinned `pip install mcp` on top of it once resolved `mcp` 2.x, which
+# google-adk does not support, and took McpToolset out of the release run.
 
 # RUN: execute the agent test through Runner.run_async
 cd "$E2E_DIR"

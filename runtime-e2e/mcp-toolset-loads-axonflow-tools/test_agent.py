@@ -35,6 +35,21 @@ from axonflow_adk.plugin import AxonFlowPluginConfig
 from _lib.stub_model import TextOnlyStubModel
 
 
+def _connection_params(toolset: object) -> object:
+    """The params the REAL toolset holds.
+
+    ADK's `McpToolset` stores them as `_connection_params` (2.0.0 and 2.8.0
+    alike). The earlier read of a public `connection_params` returned None on
+    the real class, so the URL and auth assertions below never ran. Neither
+    attribute present is a FAIL, not a skip.
+    """
+    for attr in ("_connection_params", "connection_params"):
+        params = getattr(toolset, attr, None)
+        if params is not None:
+            return params
+    raise AssertionError("toolset exposes neither _connection_params nor connection_params")
+
+
 async def main() -> int:
     endpoint = os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:18080")
 
@@ -52,25 +67,26 @@ async def main() -> int:
         print(f"FAIL: axonflow_mcp_toolset() construction failed: {exc}")
         return 1
 
-    print(f"  toolset created: {type(toolset).__name__}")
+    print(f"  toolset created: {type(toolset).__module__}.{type(toolset).__name__}")
 
     # Step 2: verify connection params
-    conn_params = getattr(toolset, "connection_params", None)
-    if conn_params is not None:
-        url = getattr(conn_params, "url", None)
-        if url:
-            expected_url = endpoint.rstrip("/") + "/mcp/"
-            if url != expected_url:
-                print(f"FAIL: URL mismatch: {url} != {expected_url}")
-                return 1
-            print(f"  URL: {url}")
-        headers = getattr(conn_params, "headers", None)
-        if headers:
-            auth = headers.get("Authorization", "")
-            if not auth.startswith("Basic "):
-                print(f"FAIL: expected Basic auth header, got: {auth[:20]}...")
-                return 1
-            print("  auth: Basic ***")
+    try:
+        conn_params = _connection_params(toolset)
+    except AssertionError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    url = getattr(conn_params, "url", None)
+    expected_url = endpoint.rstrip("/") + "/mcp/"
+    if url != expected_url:
+        print(f"FAIL: URL mismatch: {url} != {expected_url}")
+        return 1
+    print(f"  URL: {url}")
+    headers = getattr(conn_params, "headers", None) or {}
+    auth = headers.get("Authorization", "")
+    if not auth.startswith("Basic "):
+        print(f"FAIL: expected Basic auth header, got: {auth[:20]}...")
+        return 1
+    print("  auth: Basic ***")
 
     # Step 3: create agent with toolset and run through Runner.run_async.
     # Use TextOnlyStubModel since we don't know what MCP tools are available
@@ -148,15 +164,15 @@ async def main() -> int:
             endpoint=endpoint,
             bearer_token="test-bearer-token",
         )
-        cp = getattr(toolset_bearer, "connection_params", None)
-        if cp:
-            auth = getattr(cp, "headers", {}).get("Authorization", "")
-            if not auth.startswith("Bearer "):
-                print(f"FAIL: expected Bearer auth, got: {auth[:20]}...")
-                return 1
-            print("  bearer path: OK")
+        cp = _connection_params(toolset_bearer)
+        auth = (getattr(cp, "headers", None) or {}).get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            print(f"FAIL: expected Bearer auth, got: {auth[:20]}...")
+            return 1
+        print("  bearer path: OK")
     except Exception as exc:
-        print(f"  bearer path construction failed (non-fatal): {exc}")
+        print(f"FAIL: bearer path construction failed: {exc}")
+        return 1
 
     # Step 5: verify anonymous path
     try:
