@@ -34,6 +34,37 @@ from axonflow_adk._version import __version__
 AXONFLOW_CLIENT_HEADER = "X-Axonflow-Client"
 AXONFLOW_CLIENT_VALUE = f"google-adk-plugin/{__version__}"
 
+#: Where ADK defines the toolset. Verified identical at google-adk 2.0.0 (the
+#: oldest version `pyproject.toml` admits) and 2.8.0: the class has not moved.
+ADK_MCP_TOOLSET_MODULE = "google.adk.tools.mcp_tool.mcp_toolset"
+ADK_MCP_SESSION_MANAGER_MODULE = "google.adk.tools.mcp_tool.mcp_session_manager"
+
+
+def _load_adk_mcp_toolset() -> tuple[Any, Any]:
+    """Import `McpToolset` and `StreamableHTTPConnectionParams` from ADK.
+
+    Deliberately NOT `from google.adk.tools.mcp_tool import McpToolset`. That
+    package's `__init__` wraps its imports in `except ImportError` and logs
+    the cause at DEBUG, so when the `mcp` SDK is missing or incompatible the
+    caller sees only "cannot import name 'McpToolset'", which reads as an ADK
+    API change when the class has not moved. Importing the defining modules
+    directly lets the real cause surface, and it is re-raised here with the
+    remedy attached and the original chained.
+    """
+    import importlib
+
+    try:
+        toolset_mod = importlib.import_module(ADK_MCP_TOOLSET_MODULE)
+        session_mod = importlib.import_module(ADK_MCP_SESSION_MANAGER_MODULE)
+        return toolset_mod.McpToolset, session_mod.StreamableHTTPConnectionParams
+    except ImportError as exc:
+        raise ImportError(
+            "axonflow_mcp_toolset needs google-adk with its `mcp` extra "
+            "(google-adk declares the supported `mcp` SDK range there); "
+            "reinstall with `pip install 'axonflow-google-adk-plugin'` or "
+            f"`pip install 'google-adk[mcp]'`. Underlying cause: {exc}"
+        ) from exc
+
 
 def axonflow_mcp_toolset(
     endpoint: str,
@@ -77,12 +108,11 @@ def axonflow_mcp_toolset(
         `McpToolset` ready to drop into `LlmAgent(tools=[...])`.
 
     Raises:
-        ImportError: if `google-adk` is not installed.
+        ImportError: if `google-adk` or the `mcp` SDK it needs for
+            `McpToolset` is missing or at an unsupported version. The
+            underlying import error is chained as the cause.
     """
-    from google.adk.tools.mcp_tool import McpToolset
-    from google.adk.tools.mcp_tool.mcp_session_manager import (
-        StreamableHTTPConnectionParams,
-    )
+    McpToolset, StreamableHTTPConnectionParams = _load_adk_mcp_toolset()
 
     headers: dict[str, str] = {}
     if bearer_token:

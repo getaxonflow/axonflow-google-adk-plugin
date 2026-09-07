@@ -26,7 +26,13 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "google-adk>=2.0.0",
+    # The `mcp` extra is what `axonflow_mcp_toolset` runs on. google-adk keeps
+    # the `mcp` SDK optional and owns its supported range (`mcp>=1.24,<2` at
+    # 2.0.0 through 2.8.0); asking for the extra inherits that range instead of
+    # this package guessing one. Without it, an install of this plugin had no
+    # `mcp` at all, and the only thing standing in was an unpinned side-install
+    # in the release e2e, which resolved `mcp` 2.x and broke the toolset.
+    "google-adk[mcp]>=2.0.0",
     "axonflow>=9.3.0",
 ]
 

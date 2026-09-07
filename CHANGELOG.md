@@ -4,7 +4,13 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-09-05
+## [1.2.0] - 2026-09-07
+
+### Fixed
+
+- **`axonflow_mcp_toolset()` now has the `mcp` SDK it runs on.** The dependency is `google-adk[mcp]>=2.0.0` rather than bare `google-adk`. google-adk keeps the `mcp` SDK optional and owns its supported range (`mcp>=1.24,<2` from 2.0.0 through 2.8.0), and this package had never asked for it: a fresh install had no `mcp` at all, and the release e2e stood in with an unpinned `pip install mcp`. On 2026-07-28 that started resolving `mcp` 2.x, whose module layout google-adk does not support, and ADK's `google.adk.tools.mcp_tool` package swallows the resulting import error and re-raises it as `cannot import name 'McpToolset'`. The first tagged release after that date, this one, failed its runtime e2e on exactly that line and was never published. The class itself has not moved: `McpToolset` is at `google.adk.tools.mcp_tool.mcp_toolset` at both ends of the admitted range, verified against installed 2.0.0 and 2.8.0.
+- The helper imports `McpToolset` from the module that defines it, so a missing or incompatible `mcp` now surfaces its real cause (chained, with the remedy) instead of a misleading "cannot import name".
+- Unit tests now prove, in a subprocess with nothing stubbed, that the import resolves under the installed google-adk, that the installed `mcp` is inside the range google-adk's own metadata declares, and that this package's dependency asks for the `mcp` extra. The release e2e no longer side-installs `mcp`; it runs on what the wheel installs, and its connection-params assertions read the attribute the real toolset holds (`_connection_params`), where before they silently did not run.
 
 ### Added
 
