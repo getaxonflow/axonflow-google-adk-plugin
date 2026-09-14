@@ -854,7 +854,7 @@ class AxonFlowPlugin(BasePlugin):
             ]
             new_request_id = await self._create_hitl_row(
                 client_id=self._effective_client_id(),
-                user_id=user_token if user_token != self._config.default_user_token else None,
+                user_id=self._user_id(callback_context),
                 original_query=query,
                 request_type=self._config.request_type,
                 request_context=context,
@@ -1030,7 +1030,7 @@ class AxonFlowPlugin(BasePlugin):
                 triggered_tuples.append((pid, pname if isinstance(pname, str) and pname else None))
             new_request_id = await self._create_hitl_row(
                 client_id=self._effective_client_id(),
-                user_id=user_token if user_token != self._config.default_user_token else None,
+                user_id=self._user_id(tool_context),
                 original_query=f"tool: {tool_name}",
                 request_type=self._config.tool_connector_type,
                 request_context={"tool_name": tool_name, "tool_args": self._safe_input_dict(tool_args)},
@@ -1096,7 +1096,18 @@ class AxonFlowPlugin(BasePlugin):
         )
         if check is None:
             return None
-        if getattr(check, "allowed", False):
+        allowed = bool(getattr(check, "allowed", False))
+        # The platform's masked tool output, whether the answer allowed or
+        # blocked: check-output fills `redacted_data` (older builds
+        # `redacted_message`). The model must receive the masked content, never
+        # the original, so it replaces the tool result on BOTH answers.
+        masked = self._masked_output(check)
+        if allowed and masked is None and self._redaction_withheld(check):
+            return {
+                "error": "[AxonFlow] the platform did not evaluate redaction for this "
+                "tool result, so it is withheld"
+            }
+        if allowed:
             # Record the success audit entry so successful tool calls have
             # an explicit trail — previously only on_tool_error_callback
             # wrote audit rows, leaving a gap for the happy path.
@@ -1106,6 +1117,7 @@ class AxonFlowPlugin(BasePlugin):
                     scrubbed = self._config.argument_redactor(scrubbed)
                 except Exception as exc:  # noqa: BLE001 - never break audit
                     logger.warning("axonflow argument_redactor failed: %s", exc)
+            audit_request: Any = None
             try:
                 audit_request = AuditToolCallRequest(
                     tool_name=tool_name,
@@ -1119,46 +1131,92 @@ class AxonFlowPlugin(BasePlugin):
                     caller_name="adk-tool",
                     tool_type="adk-tool",
                     input=scrubbed,
-                    user_id=user_token,
+                    user_id=self._user_id(tool_context),
                     success=True,
                     error_message=None,
                 )
             except Exception as exc:  # noqa: BLE001 - SDK shape drift tolerated
+                # Skip only the audit: the masked content below must still
+                # replace the tool result.
                 logger.warning(
                     "axonflow AuditToolCallRequest construction failed: %s; skipping success audit", exc
                 )
+            if audit_request is not None:
+
+                async def _do_success_audit() -> Any:
+                    client = await self._get_client()
+                    return await client.audit_tool_call(request=audit_request)
+
+                await self._call_with_guard("audit_tool_call", _do_success_audit, fail_open=True)
+            if masked is None:
                 return None
+            return self._redacted_result(masked)
 
-            async def _do_success_audit() -> Any:
-                client = await self._get_client()
-                return await client.audit_tool_call(request=audit_request)
-
-            await self._call_with_guard("audit_tool_call", _do_success_audit, fail_open=True)
-            return None
-
-        # Platform redacted the output. Preserve the original
-        # typed dict shape as much as possible. The platform's
-        # `redacted_message` field is the same payload as we sent in but
-        # with PII spans masked — when that is the JSON we serialized, we
-        # round-trip it back to a dict so downstream tool chaining still
-        # sees the same key structure (with redacted values). When it
-        # isn't parseable (the platform returned a non-JSON string), we
-        # fall back to the wrapper shape and tag the redaction.
-        redacted_message = getattr(check, "redacted_message", None)
-        block_reason = getattr(check, "block_reason", None) or "output blocked by policy"
-        if redacted_message is None:
+        if masked is None:
+            block_reason = getattr(check, "block_reason", None) or "output blocked by policy"
             return {"error": f"[AxonFlow] {block_reason}"}
-        if isinstance(redacted_message, str):
+        return self._redacted_result(masked)
+
+    @staticmethod
+    def _user_id(ctx: Any) -> str | None:
+        """The user id sent in fields that NAME a user (audit and HITL rows).
+
+        It is the ADK invocation's own user id, or nothing. It is never the
+        AxonFlow user token: the token is a credential, and these fields are
+        stored as the user id of an audit record or a HITL row. The token is
+        sent only as `user_token`, where the API takes it.
+        """
+        uid = getattr(ctx, "user_id", None)
+        return uid if isinstance(uid, str) and uid else None
+
+    @staticmethod
+    def _masked_output(check: Any) -> Any:
+        """The platform's masked tool output, or None when it returned none.
+
+        check-output fills `redacted_data`; older platform builds fill
+        `redacted_message`. An empty value is no masked content.
+        """
+        for name in ("redacted_data", "redacted_message"):
+            value = getattr(check, name, None)
+            if value is None or (isinstance(value, (str, dict, list)) and not value):
+                continue
+            return value
+        return None
+
+    def _redaction_withheld(self, check: Any) -> bool:
+        """True when the platform did NOT evaluate redaction while the response
+        path's handshake declares `field_redact@1`.
+
+        `redaction_evaluated` absent reads exactly as false: the platform sends
+        the field only when its detector ran (omitempty), and the SDK defaults
+        it to False. With nothing masked to substitute, forwarding the original
+        would treat an unevaluated redaction as a clean one; the SDK's rule for
+        a false `redaction_evaluated` is to fail closed. Without a handshake no
+        obligation is declared, and the answer stands as before.
+        """
+        return not getattr(check, "redaction_evaluated", False) and self._pep_handshakes() is not None
+
+    @staticmethod
+    def _redacted_result(masked: Any) -> dict[str, Any]:
+        """Substitute the platform's masked output for the tool result.
+
+        The masked output is the same payload we sent in, with PII spans
+        masked. When it is the JSON we serialized, it round-trips back to a
+        dict, so downstream tool chaining still sees the same key structure
+        (with masked values). When it isn't parseable (a non-JSON string),
+        it falls back to the wrapper shape. Both carry the redaction tag.
+        """
+        if isinstance(masked, str):
             # broaden the exception scope. `TypeError`/
             # `ValueError` cover well-formed-but-not-JSON inputs, but
             # pathologically nested payloads can raise `RecursionError`
             # (a subclass of Exception, not of ValueError) and we must
             # not crash the agent on a buggy platform release.
             try:
-                parsed = json.loads(redacted_message)
+                parsed = json.loads(masked)
             except Exception as exc:  # noqa: BLE001 - boundary defense
                 logger.warning(
-                    "axonflow redacted_message JSON parse failed: %s; "
+                    "axonflow redacted output JSON parse failed: %s; "
                     "falling back to wrapper shape",
                     exc,
                 )
@@ -1167,13 +1225,13 @@ class AxonFlowPlugin(BasePlugin):
                 # Preserve typed shape so the model sees the same keys.
                 parsed["_axonflow_redacted"] = True
                 return parsed
-            return {"result": redacted_message, "_axonflow_redacted": True}
+            return {"result": masked, "_axonflow_redacted": True}
         # Some platform builds return a dict directly.
-        if isinstance(redacted_message, dict):
-            out: dict[str, Any] = dict(redacted_message)
+        if isinstance(masked, dict):
+            out: dict[str, Any] = dict(masked)
             out["_axonflow_redacted"] = True
             return out
-        return {"result": redacted_message, "_axonflow_redacted": True}
+        return {"result": masked, "_axonflow_redacted": True}
 
     async def on_tool_error_callback(
         self,
@@ -1185,7 +1243,6 @@ class AxonFlowPlugin(BasePlugin):
     ) -> dict[str, Any] | None:
         """Audit tool errors. Never blocks."""
         tool_name = getattr(tool, "name", tool.__class__.__name__)
-        user_token = self._user_token(tool_context)
         scrubbed = self._safe_input_dict(tool_args)
         if scrubbed and self._config.argument_redactor is not None:
             try:
@@ -1200,7 +1257,7 @@ class AxonFlowPlugin(BasePlugin):
                 caller_name="adk-tool",
                 tool_type="adk-tool",
                 input=scrubbed,
-                user_id=user_token,
+                user_id=self._user_id(tool_context),
                 success=False,
                 error_message=str(error)[:2000],
             )
