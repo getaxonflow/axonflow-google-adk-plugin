@@ -1096,3 +1096,225 @@ async def test_after_tool_success_audit_uses_redactor(
     req = audit_calls[0][1]["request"]
     assert req.input["secret"] == "[REDACTED]"
     assert req.input["amount"] == 100
+
+
+# ---------------------------------------------------------------------------
+# after_tool_callback: the platform's masked output reaches the model
+# (W3-Y v11 plugin census, report section 7.2). The platform answers
+# check-output with `allowed: true` plus masked content in `redacted_data`
+# (or `redacted_message`); the model must receive the masked content, never
+# the original, whether `allowed` is true or false.
+# ---------------------------------------------------------------------------
+
+_MASKED_RECORD = '{"customer_email": "[REDACTED]", "card": "[REDACTED]"}'
+
+
+def _check_output(**fields):
+    base = {"allowed": True, "redacted_message": None, "redacted_data": None, "block_reason": None}
+    base.update(fields)
+    return types.SimpleNamespace(**base)
+
+
+async def test_after_tool_allowed_with_redacted_data_returns_the_masked_result(
+    fake_client, tool_context, fake_tool
+):
+    fake_client.check_tool_output_result = _check_output(allowed=True, redacted_data=_MASKED_RECORD)
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={"customer_id": "c-100"},
+        tool_context=tool_context,
+        result={"customer_email": "jane.doe@example.com", "card": "4111 1111 1111 1111"},
+    )
+    assert result == {"customer_email": "[REDACTED]", "card": "[REDACTED]", "_axonflow_redacted": True}
+    assert "audit_tool_call" in [c[0] for c in fake_client.calls], "the success audit still runs"
+
+
+async def test_after_tool_allowed_with_redacted_message_returns_the_masked_result(
+    fake_client, tool_context, fake_tool
+):
+    fake_client.check_tool_output_result = _check_output(allowed=True, redacted_message=_MASKED_RECORD)
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={},
+        tool_context=tool_context,
+        result={"customer_email": "jane.doe@example.com", "card": "4111 1111 1111 1111"},
+    )
+    assert result == {"customer_email": "[REDACTED]", "card": "[REDACTED]", "_axonflow_redacted": True}
+
+
+async def test_after_tool_allowed_without_masked_content_keeps_the_original(
+    fake_client, tool_context, fake_tool
+):
+    fake_client.check_tool_output_result = _check_output(allowed=True)
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool, tool_args={}, tool_context=tool_context, result={"status": "ok"}
+    )
+    assert result is None
+
+
+async def test_after_tool_denied_with_masked_content_substitutes_it_not_an_error(
+    fake_client, tool_context, fake_tool
+):
+    fake_client.check_tool_output_result = _check_output(
+        allowed=False, redacted_data=_MASKED_RECORD, block_reason="output policy"
+    )
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={},
+        tool_context=tool_context,
+        result={"customer_email": "jane.doe@example.com", "card": "4111 1111 1111 1111"},
+    )
+    assert result == {"customer_email": "[REDACTED]", "card": "[REDACTED]", "_axonflow_redacted": True}
+
+
+async def test_after_tool_tabular_result_round_trips_masked(fake_client, tool_context, fake_tool):
+    masked_rows = '{"rows": [{"email": "[REDACTED]", "tier": "gold"}, {"email": "[REDACTED]", "tier": "silver"}]}'
+    fake_client.check_tool_output_result = _check_output(allowed=True, redacted_data=masked_rows)
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={},
+        tool_context=tool_context,
+        result={"rows": [{"email": "jane@example.com", "tier": "gold"}, {"email": "bob@example.com", "tier": "silver"}]},
+    )
+    assert result == {
+        "rows": [{"email": "[REDACTED]", "tier": "gold"}, {"email": "[REDACTED]", "tier": "silver"}],
+        "_axonflow_redacted": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "withheld"),
+    [
+        # absent: how the platform reports a detector that did not run (omitempty)
+        ({}, True),
+        ({"redaction_evaluated": False}, True),
+        ({"redaction_evaluated": True}, False),
+    ],
+    ids=["absent", "false", "true"],
+)
+async def test_after_tool_under_the_handshake_withholds_a_result_the_platform_did_not_evaluate(
+    fake_client, tool_context, fake_tool, fields, withheld
+):
+    """The response path declares field_redact@1 when the handshake is on. An
+    allowed answer with nothing masked is withheld unless the platform says it
+    evaluated redaction; absent reads exactly as false."""
+    fake_client.check_tool_output_result = _check_output(allowed=True, **fields)
+    plugin = _new_plugin(fake_client, pep_audience="adk-test-audience")
+    result = await plugin.after_tool_callback(
+        tool=fake_tool,
+        tool_args={},
+        tool_context=tool_context,
+        result={"customer_email": "jane.doe@example.com"},
+    )
+    if withheld:
+        assert isinstance(result, dict) and result.get("error", "").startswith("[AxonFlow] ")
+        assert "jane.doe@example.com" not in str(result)
+    else:
+        assert result is None
+
+
+async def test_after_tool_redaction_not_evaluated_without_the_handshake_keeps_the_original(
+    fake_client, tool_context, fake_tool
+):
+    """No handshake means no declared obligation: the answer is unchanged."""
+    fake_client.check_tool_output_result = _check_output(allowed=True, redaction_evaluated=False)
+    plugin = _new_plugin(fake_client)
+    result = await plugin.after_tool_callback(
+        tool=fake_tool, tool_args={}, tool_context=tool_context, result={"status": "ok"}
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# A user id is never the AxonFlow user token (W3-Y census, S2): the token is a
+# credential, and audit and HITL rows store their user id. The ADK
+# invocation's own user id is sent instead, or nothing.
+# ---------------------------------------------------------------------------
+
+_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl"
+
+
+def _ctx_with_token(user_id: str):
+    return types.SimpleNamespace(
+        state={"axonflow_user_token": _TOKEN},
+        agent_name="test_agent",
+        invocation_id="inv-test-1",
+        user_id=user_id,
+    )
+
+
+def _audit_requests(fake_client):
+    return [c[1]["request"] for c in fake_client.calls if c[0] == "audit_tool_call"]
+
+
+async def test_success_audit_user_id_is_the_adk_user_not_the_token(fake_client, fake_tool):
+    fake_client.check_tool_output_result = _check_output(allowed=True)
+    plugin = _new_plugin(fake_client)
+    await plugin.after_tool_callback(
+        tool=fake_tool, tool_args={}, tool_context=_ctx_with_token("cust-001"), result={"status": "ok"}
+    )
+    (request,) = _audit_requests(fake_client)
+    assert request.user_id == "cust-001"
+    assert _TOKEN not in str(vars(request).get("user_id"))
+
+
+async def test_success_audit_user_id_is_none_without_an_adk_user(fake_client, fake_tool):
+    fake_client.check_tool_output_result = _check_output(allowed=True)
+    plugin = _new_plugin(fake_client)
+    await plugin.after_tool_callback(
+        tool=fake_tool, tool_args={}, tool_context=_ctx_with_token(""), result={"status": "ok"}
+    )
+    (request,) = _audit_requests(fake_client)
+    assert request.user_id is None
+
+
+async def test_error_audit_user_id_is_the_adk_user_not_the_token(fake_client, fake_tool):
+    plugin = _new_plugin(fake_client)
+    await plugin.on_tool_error_callback(
+        tool=fake_tool,
+        tool_args={},
+        tool_context=_ctx_with_token("cust-001"),
+        error=RuntimeError("tool failed"),
+    )
+    (request,) = _audit_requests(fake_client)
+    assert request.user_id == "cust-001"
+
+
+async def test_model_path_hitl_row_user_id_is_the_adk_user_not_the_token(
+    fake_client, llm_request_with_text
+):
+    fake_client.pre_check_result = types.SimpleNamespace(
+        approved=False,
+        context_id="pre-check-ctx-1",
+        block_reason="require_approval",
+        policies=["loan-amount-cap"],
+    )
+    fake_client.hitl_status_queue = ["approved"]
+    plugin = _new_plugin(fake_client)
+    await plugin.before_model_callback(
+        callback_context=_ctx_with_token("cust-001"), llm_request=llm_request_with_text
+    )
+    (create,) = [c[1]["request"] for c in fake_client.calls if c[0] == "create_hitl_request"]
+    assert create.user_id == "cust-001"
+
+
+async def test_tool_path_hitl_row_user_id_is_the_adk_user_not_the_token(fake_client, fake_tool):
+    fake_client.check_tool_input_result = types.SimpleNamespace(
+        allowed=False,
+        block_reason="require_approval",
+        policy_matches=[types.SimpleNamespace(policy_id="p-1", policy_name="Payment step-up")],
+        risk_level="high",
+    )
+    fake_client.hitl_status_queue = ["approved"]
+    plugin = _new_plugin(fake_client)
+    await plugin.before_tool_callback(
+        tool=fake_tool, tool_args={"amount": 500}, tool_context=_ctx_with_token("cust-001")
+    )
+    (create,) = [c[1]["request"] for c in fake_client.calls if c[0] == "create_hitl_request"]
+    assert create.user_id == "cust-001"
+

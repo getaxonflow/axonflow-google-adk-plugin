@@ -23,7 +23,7 @@ cd runtime-e2e
 This will:
 1. Bring up Postgres + Redis + AxonFlow Agent via docker-compose
 2. Install the plugin from the local checkout
-3. Run all ten test scenarios
+3. Run all eleven test scenarios
 4. Print a PASS/FAIL/SKIP summary
 5. Tear down the stack
 
@@ -53,6 +53,7 @@ TESTS="agent-runs-with-plugin-registered audit-recorded-on-tool-success" ./run-a
 | `sequential-runs-breaker-stable/` | 5 sequential runs, circuit breaker stays closed |
 | `breaker-opens-on-stack-down/` | Fail-open behavior when AxonFlow is unreachable |
 | `on-user-message-callback-fires/` | Multi-turn conversation, no-op callback does not interfere |
+| `tool-result-redaction/` | A tool result reaches the model with the platform's redaction applied; the audit `user_id` is never the user token |
 
 ## AxonFlow agent image
 

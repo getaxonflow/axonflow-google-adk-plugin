@@ -4,6 +4,14 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Tool results now reach the model with the platform's redaction applied.** `after_tool_callback` returned the original tool result whenever the output check answered `allowed: true`, so the masked content the platform returned (`redacted_data`, or `redacted_message` on older builds) never reached the model: an email address or a card number in a tool result went to the model unmasked. The masked content now replaces the tool result whether the answer allowed or blocked it, keeping the result's shape and the `_axonflow_redacted` tag; only when nothing masked came back is the original kept (or, on a block, the error returned).
+- **A behaviour change for handshake users: a tool result the platform did not evaluate for redaction is now withheld.** With the capability handshake on (`AXONFLOW_PEP_AUDIENCE`), the response path declares that it discharges `field_redact@1`. When the output check allows a result with nothing masked and reports `redaction_evaluated` false, or omits it, which is how the platform reports a detector that did not run, the tool result is now withheld instead of passed through: forwarding it would treat an unevaluated redaction as a clean one. A result the platform evaluated and found nothing to mask passes unchanged, and without the handshake nothing changes.
+- **The per-user token is no longer written as a user id.** The tool-call audit sent the AxonFlow user token as its `user_id`, and the HITL rows did the same whenever a token was configured, so a credential was stored in audit and HITL records. Those fields now carry the ADK invocation's own user id, or nothing; the token is still sent only as `user_token`.
+
 ## [1.2.0] - 2026-09-07
 
 ### Fixed
