@@ -95,10 +95,35 @@ async def test_before_model_deny_returns_short_circuit_llm_response(
     assert all(c[0] != "get_hitl_request" for c in fake_client.calls)
 
 
-async def test_before_model_axonflow_unreachable_fails_open(
+async def test_before_model_axonflow_unreachable_fails_open_with_a_notice(
+    fake_client, callback_context, llm_request_with_text, caplog
+):
+    """No answer (the SDK's connection failure) with the default fail_open →
+    the LLM call proceeds, and a WARNING notice says it ran ungoverned."""
+    from axonflow.exceptions import ConnectionError as SdkConnectionError
+
+    fake_client.raise_on_pre_check = SdkConnectionError("Failed to connect to AxonFlow Agent: connection refused")
+    plugin = _new_plugin(fake_client)
+    caplog.set_level("WARNING", logger="axonflow_adk.plugin")
+
+    result = await plugin.before_model_callback(
+        callback_context=callback_context,
+        llm_request=llm_request_with_text,
+    )
+
+    assert result is None, "AxonFlow outage MUST NOT take down the agent"
+    assert any(
+        "AxonFlow pre_check got no answer" in r.getMessage() and "UNGOVERNED" in r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    ), "proceeding ungoverned MUST log a WARNING notice"
+
+
+async def test_before_model_failure_that_is_not_a_connection_failure_denies(
     fake_client, callback_context, llm_request_with_text
 ):
-    """AxonFlow exception → fail open (return None, let LLM call proceed)."""
+    """A failure that is not a connection failure is not an allow: the model
+    call is denied, even though the message mentions a refused connection."""
     fake_client.raise_on_pre_check = RuntimeError("axonflow agent connection refused")
     plugin = _new_plugin(fake_client)
 
@@ -107,7 +132,9 @@ async def test_before_model_axonflow_unreachable_fails_open(
         llm_request=llm_request_with_text,
     )
 
-    assert result is None, "AxonFlow outage MUST NOT take down the agent"
+    assert result is not None, "a failure that is not a connection failure MUST deny"
+    text = result.content.parts[0].text
+    assert text.startswith("[AxonFlow policy denial] pre_check did not complete with an allow: RuntimeError: "), text
 
 
 async def test_before_model_axonflow_timeout_fails_open(
@@ -367,8 +394,10 @@ async def test_after_tool_hard_deny_returns_error(fake_client, tool_context, fak
 async def test_circuit_breaker_opens_after_threshold(
     fake_client, callback_context, llm_request_with_text
 ):
-    """N consecutive failures → breaker opens → subsequent hooks skip AxonFlow."""
-    fake_client.raise_on_pre_check = RuntimeError("axonflow down")
+    """N consecutive connection failures → breaker opens → subsequent hooks skip AxonFlow."""
+    from axonflow.exceptions import ConnectionError as SdkConnectionError
+
+    fake_client.raise_on_pre_check = SdkConnectionError("axonflow down")
     plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
 
     # 3 consecutive failures
@@ -394,7 +423,9 @@ async def test_circuit_breaker_recovers_after_window(
     fake_client, callback_context, llm_request_with_text
 ):
     """Open breaker → wait recovery_seconds → next call is a probe (half-open)."""
-    fake_client.raise_on_pre_check = RuntimeError("transient")
+    from axonflow.exceptions import TimeoutError as SdkTimeoutError
+
+    fake_client.raise_on_pre_check = SdkTimeoutError("transient")
     plugin = _new_plugin(
         fake_client,
         breaker_failure_threshold=2,

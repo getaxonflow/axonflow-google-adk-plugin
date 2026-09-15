@@ -183,6 +183,40 @@ def _install_minimal_axonflow_stub() -> None:
     sys.modules["axonflow.hitl"] = hitl_mod
     axonflow_mod.hitl = hitl_mod
 
+    # axonflow.exceptions stub - the classes the plugin's failure table
+    # (`_classify_failure`) names, with the SDK's hierarchy: every class
+    # derives from AxonFlowError, so an SDK `ConnectionError` is NOT the
+    # builtin one. tests-sdk-wire/ and runtime-e2e/ prove the table against
+    # the REAL SDK; these stubs only let the unit tests raise the same types.
+    exceptions_mod = types.ModuleType("axonflow.exceptions")
+
+    class AxonFlowError(Exception):
+        def __init__(self, message: str = "", details: dict[str, Any] | None = None) -> None:
+            self.message = message
+            self.details = details or {}
+            super().__init__(message)
+
+    class AuthenticationError(AxonFlowError):
+        pass
+
+    class ConnectionError(AxonFlowError):  # noqa: A001 - mirrors the SDK name
+        pass
+
+    class TimeoutError(AxonFlowError):  # noqa: A001 - mirrors the SDK name
+        pass
+
+    class ConnectorError(AxonFlowError):
+        def __init__(self, message: str, connector: str | None = None, operation: str | None = None) -> None:
+            super().__init__(message, details={"connector": connector, "operation": operation})
+
+    exceptions_mod.AxonFlowError = AxonFlowError
+    exceptions_mod.AuthenticationError = AuthenticationError
+    exceptions_mod.ConnectionError = ConnectionError
+    exceptions_mod.TimeoutError = TimeoutError
+    exceptions_mod.ConnectorError = ConnectorError
+    sys.modules["axonflow.exceptions"] = exceptions_mod
+    axonflow_mod.exceptions = exceptions_mod
+
 
 _install_minimal_genai_stub()
 _install_minimal_adk_stub()
