@@ -4,6 +4,13 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-15: the release suite runs on AxonFlow v11.0.0
+
+### Fixed
+
+- **The runtime e2e suite no longer depends on legacy policy rows.** Its deny test wrote a block rule straight into `static_policies` and expected the tool call to be blocked. From AxonFlow v11.0.0 a row written there authors no verdict, so the v1.3.0 release run failed its runtime e2e and 1.3.0 was never published to PyPI. The deny test now calls a tool whose argument carries a destructive shell command, which the platform's shipped `sys_dangerous_destructive_fs` control blocks on the check-input pass. The require-approval test no longer writes its legacy row either: no shipped control requires approval, so it proves the hook chain with HITL polling on, on an allowed call.
+- The plugin itself is unchanged: 1.3.1 carries every change listed under 1.3.0.
+
 ## [1.3.0] - 2026-09-14: the platform's redaction reaches the model, and an unevaluated result is withheld
 
 ### Fixed
