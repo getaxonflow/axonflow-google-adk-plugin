@@ -24,8 +24,9 @@ proven in isolation:
   E. nothing listens -> fail_open=True runs the tool with a WARNING notice per
      governed call; fail_open=False denies.
   F. check-input answers after the timeout -> the same split as E.
-  G. five 401s with a breaker threshold of 3 -> every run denied, the breaker
-     stays closed, and a sixth run is still denied.
+  G. check-input answers 401 for six runs with a breaker threshold of 1 ->
+     every run denied, the breaker closed after each, and every run reaches
+     the platform.
 
 Refusals: 401, the platform's full Free-tier daily-quota 429, 500, 503, and a
 502 with an HTML body. A-C run with fail_open True and False: an answer that
@@ -77,7 +78,7 @@ QUOTA_429 = {
 # name -> (status, content type, body, text the tool-path deny carries, text the model-path deny carries)
 REFUSALS: dict[str, tuple[int, str, str, str, str]] = {
     "401": (401, "application/json", json.dumps({"error": "Invalid credentials"}), "ConnectorError: Invalid credentials", "AuthenticationError: Invalid credentials"),
-    "429": (429, "application/json", json.dumps(QUOTA_429), "ConnectorError: Daily request limit reached", "AxonFlowError: HTTP 429"),
+    "429": (429, "application/json", json.dumps(QUOTA_429), "ConnectorError: Daily request limit reached", 'AxonFlowError: HTTP 429: {"error": "Daily request limit reached'),
     "500": (500, "application/json", json.dumps({"error": "internal error"}), "ConnectorError: internal error", "AxonFlowError: HTTP 500"),
     "503": (503, "application/json", json.dumps({"error": "service unavailable"}), "ConnectorError: service unavailable", "AxonFlowError: HTTP 503"),
     "502-html": (502, "text/html", "<html><body>502 Bad Gateway</body></html>", "JSONDecodeError", "AxonFlowError: HTTP 502"),
@@ -138,17 +139,10 @@ class QuietServer(ThreadingHTTPServer):
     block_on_close = False
 
 
-class Notices(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
-        self.messages: list[str] = []
+from _lib.notices import capture_plugin_log  # noqa: E402
 
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
-
-
-NOTICES = Notices()
-logging.getLogger("axonflow_adk.plugin").addHandler(NOTICES)
+# The plugin's WARNING records: the notices a user sees.
+NOTICES = capture_plugin_log(logging.WARNING)
 
 FAILURES = 0
 

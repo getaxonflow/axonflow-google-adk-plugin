@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# test.sh — Verify fail-open behavior when AxonFlow is unreachable.
-# Points the plugin at a dead port and verifies the agent still completes.
+# test.sh — Verify the no-answer posture when AxonFlow is unreachable.
+# Points the plugin at a dead port: with fail_open=True the agent completes
+# ungoverned with a WARNING notice per governed call and the breaker opens;
+# with fail_open=False the same outage denies.
 # Does NOT assert DB state (the stack is intentionally unreachable).
 set -euo pipefail
 

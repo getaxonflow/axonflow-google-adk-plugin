@@ -38,9 +38,9 @@ from typing import Any
 
 import pytest
 
-# The platform's Free-tier daily-quota 429 (platform/agent/
-# community_saas_ratelimit_response.go writeRateLimitError), with every key it
-# writes.
+# The platform's Free-tier daily-quota 429 (getaxonflow/axonflow,
+# platform/agent/community_saas_ratelimit_response.go writeRateLimitError),
+# with every key it writes.
 _QUOTA_429 = {
     "error": "Daily request limit reached. Resets at midnight UTC.",
     "limit_type": "daily_quota",
@@ -64,7 +64,7 @@ _QUOTA_429 = {
 # on pre_check.
 _REFUSALS = {
     "401": (401, "application/json", json.dumps({"error": "Invalid credentials"}), "ConnectorError: Invalid credentials", "AuthenticationError: Invalid credentials"),
-    "429": (429, "application/json", json.dumps(_QUOTA_429), "ConnectorError: Daily request limit reached", "AxonFlowError: HTTP 429"),
+    "429": (429, "application/json", json.dumps(_QUOTA_429), "ConnectorError: Daily request limit reached", 'AxonFlowError: HTTP 429: {"error": "Daily request limit reached'),
     "500": (500, "application/json", json.dumps({"error": "internal error"}), "ConnectorError: internal error", "AxonFlowError: HTTP 500"),
     "503": (503, "application/json", json.dumps({"error": "service unavailable"}), "ConnectorError: service unavailable", "AxonFlowError: HTTP 503"),
     "502-html": (502, "text/html", "<html><body>502 Bad Gateway</body></html>", "JSONDecodeError", "AxonFlowError: HTTP 502"),
@@ -91,6 +91,10 @@ class _Stub:
         self.content_type = "application/json"
         self.body = "{}"
         self.delay_seconds = 0.0
+        # "": a whole answer. "truncated": the headers promise more body than
+        # is sent before the connection closes. "silent": the connection closes
+        # without an answer.
+        self.break_answer = ""
         self.hits: list[str] = []
         self.url = ""
 
@@ -110,10 +114,14 @@ def stub() -> Iterator[_Stub]:
             state.hits.append(self.path)
             if state.delay_seconds:
                 time.sleep(state.delay_seconds)
+            if state.break_answer == "silent":
+                self.close_connection = True
+                return
             raw = state.body.encode()
+            promised = len(raw) + (200 if state.break_answer == "truncated" else 0)
             self.send_response(state.status)
             self.send_header("Content-Type", state.content_type)
-            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Content-Length", str(promised))
             self.end_headers()
             self.wfile.write(raw)
 
@@ -356,3 +364,53 @@ async def test_no_answer_opens_the_breaker_and_an_open_breaker_is_no_answer(stub
     else:
         assert isinstance(result, dict) and "circuit breaker open" in result["error"], result
     await plugin.aclose()
+
+
+# ---------------------------------------------------------------------------
+# A broken answer is not "no answer", and a failure's text never carries the
+# configured secret
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+@pytest.mark.parametrize("mode", ["truncated", "silent"])
+async def test_a_broken_answer_denies(stub: _Stub, mode: str, fail_open: bool) -> None:
+    """A 401 whose body is cut short, and a connection closed after the request
+    was sent with no answer, both raise httpx's RemoteProtocolError. Neither is
+    a connection that could not be made, so fail_open does not apply: both
+    deny."""
+    status, ctype, body, _, _ = _REFUSALS["401"]
+    stub.answer(status, ctype, body)
+    stub.break_answer = mode
+    plugin = _plugin(stub.url, fail_open=fail_open)
+
+    result = await _before_tool(plugin)
+
+    assert isinstance(result, dict), f"a {mode} answer let the tool call run (hook returned {result!r})"
+    assert result["error"].startswith("[AxonFlow] check_tool_input did not complete with an allow: RemoteProtocolError: "), result
+    assert stub.hits == ["/api/v1/mcp/check-input"]
+    await plugin.aclose()
+
+
+async def test_a_client_that_cannot_be_built_denies_without_echoing_the_secret(stub: _Stub, caplog: pytest.LogCaptureFixture) -> None:
+    """The real SDK rejects a non-string client_secret with a validation error
+    that quotes the value. The call is denied, and neither the deny reason nor
+    the log carries the secret."""
+    from axonflow_adk.plugin import AxonFlowPlugin, AxonFlowPluginConfig
+
+    secret = "SUPERSECRET-wire-7c1d"
+    plugin = AxonFlowPlugin(
+        endpoint=stub.url,
+        client_id="wire",
+        client_secret=[secret],  # type: ignore[arg-type]
+        config=AxonFlowPluginConfig(call_timeout_seconds=2.0, fail_open=True),
+    )
+    caplog.set_level(logging.DEBUG)
+
+    result = await _before_tool(plugin)
+
+    assert isinstance(result, dict), f"an unbuildable client let the tool call run ({result!r})"
+    assert "could not be built from the plugin's endpoint, client_id and client_secret" in result["error"], result
+    assert secret not in result["error"]
+    assert all(secret not in r.getMessage() for r in caplog.records), "the secret reached the log"
+    assert stub.hits == [], "no request can be sent without a client"

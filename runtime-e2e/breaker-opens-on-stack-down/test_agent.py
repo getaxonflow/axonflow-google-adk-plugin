@@ -23,7 +23,6 @@ This test verifies:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import sys
 
@@ -35,24 +34,13 @@ from google.genai import types as genai_types
 
 from axonflow_adk import AxonFlowPlugin
 from axonflow_adk.plugin import AxonFlowPluginConfig, _BreakerState
+from _lib.notices import capture_plugin_log
 from _lib.stub_model import StubModel
 
 TOOL_EXECUTED = False
 
-
-class _Notices(logging.Handler):
-    """Collects the plugin's WARNING records: the notices a user sees."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
-        self.messages: list[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
-
-
-NOTICES = _Notices()
-logging.getLogger("axonflow_adk.plugin").addHandler(NOTICES)
+# The plugin's WARNING records: the notices a user sees.
+NOTICES = capture_plugin_log()
 
 
 def get_balance(account_id: str) -> dict:

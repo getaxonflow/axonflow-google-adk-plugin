@@ -44,17 +44,10 @@ CLIENT_ID = "e2e-hitl-polling"
 TOOL_EXECUTED = False
 
 
-class _PluginLog(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(level=logging.INFO)
-        self.messages: list[str] = []
+from _lib.notices import capture_plugin_log  # noqa: E402
 
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
-
-
-PLUGIN_LOG = _PluginLog()
-logging.getLogger("axonflow_adk.plugin").addHandler(PLUGIN_LOG)
+# The plugin's INFO records: the hold logs "AWAITING APPROVAL" at INFO.
+PLUGIN_LOG = capture_plugin_log(logging.INFO)
 
 
 def disburse_funds(amount: int, destination: str) -> dict:

@@ -26,10 +26,14 @@ Three hard design constraints:
        raises, a 429, a 5xx, an answer that cannot be read, or any failure
        that is not a connection failure. The call is DENIED with the
        platform's text. No setting changes this.
-     - NO ANSWER arrived: the connection failed, the call timed out, or
-       the breaker is open. `AxonFlowPluginConfig.fail_open` decides.
-       True (the default) lets the call proceed UNGOVERNED with a WARNING
-       notice; False denies it.
+     - NO ANSWER arrived: the connection could not be made, a read or write
+       failed on the network, the call timed out, or the breaker is open.
+       `AxonFlowPluginConfig.fail_open` decides. True (the default) lets
+       the call proceed UNGOVERNED with a WARNING notice; False denies it.
+
+   An answer that broke off partway, a proxy's refusal, and a load
+   balancer's 502 / 503 in front of an AxonFlow that is down are all
+   answers, so they deny even with `fail_open=True`.
 
    The audit hooks never block.
 
@@ -145,15 +149,20 @@ class _FailureClass(Enum):
 # httpx client directly, so their transport failures escape as httpx's own
 # classes, while `pre_check` maps them to the SDK's ConnectionError /
 # TimeoutError (which are NOT the builtins). The builtins cover a transport
-# below httpx and asyncio's own timeout (a distinct class before Python
-# 3.11). httpx's UnsupportedProtocol and InvalidURL are deliberately absent:
-# a malformed endpoint is a configuration error, and it denies instead of
-# letting every call run ungoverned.
+# below httpx and asyncio's own timeout (a distinct class before Python 3.11).
+#
+# No answer is: the connection could not be made (refused, DNS, TLS: an
+# outage and a wrong host look the same here), a read or write failed on the
+# network (httpx.NetworkError), or the call timed out. Deliberately absent, so
+# they DENY: httpx.RemoteProtocolError (an answer that broke off or was not
+# HTTP, e.g. a 401 whose body was cut short, or a port that does not speak
+# HTTP), httpx.ProxyError (a proxy that refused the request), and
+# UnsupportedProtocol / InvalidURL (a malformed endpoint). Those are
+# answers or configuration errors, and reading them as no answer would let
+# every call run ungoverned.
 _NO_ANSWER_FAILURES: tuple[type[BaseException], ...] = (
     httpx.TimeoutException,
     httpx.NetworkError,
-    httpx.RemoteProtocolError,
-    httpx.ProxyError,
     _SdkConnectionError,
     _SdkTimeoutError,
     ConnectionError,
@@ -250,6 +259,19 @@ class _CircuitBreaker:
             if self.consecutive_failures >= self.failure_threshold:
                 self.state = _BreakerState.OPEN
                 self.opened_at = time.monotonic()
+            self._probe_in_flight = False
+
+    async def release(self) -> None:
+        """Free the probe slot without counting the call either way.
+
+        For a call that ended without an outcome (cancelled by its caller):
+        it says nothing about whether AxonFlow answers, so it must neither
+        reset the failure count nor add to it. ADK cancels sibling tool calls
+        when one of them raises; counted as failures, those cancellations
+        could open the breaker and turn a platform that is answering into
+        no-answer outcomes.
+        """
+        async with self._lock:
             self._probe_in_flight = False
 
 
@@ -537,11 +559,21 @@ class AxonFlowPlugin(BasePlugin):
                 # do not need the SDK on the import path.
                 from axonflow import AxonFlow as AxonFlowClient
 
-                self._client = AxonFlowClient(
-                    endpoint=self._endpoint,
-                    client_id=self._client_id,
-                    client_secret=self._client_secret,
-                )
+                try:
+                    self._client = AxonFlowClient(
+                        endpoint=self._endpoint,
+                        client_id=self._client_id,
+                        client_secret=self._client_secret,
+                    )
+                except Exception as exc:  # noqa: BLE001 - the SDK's text can quote the secret
+                    # The SDK's validation error quotes the values it was given,
+                    # and a governed call puts a failure's text into the deny
+                    # reason and the log. Name the error class only.
+                    msg = (
+                        "the AxonFlow client could not be built from the plugin's endpoint, "
+                        f"client_id and client_secret ({type(exc).__name__})"
+                    )
+                    raise RuntimeError(msg) from None
             return self._client
 
     async def _call_with_guard(
@@ -566,9 +598,9 @@ class AxonFlowPlugin(BasePlugin):
 
         Breaker accounting follows the class. A result, or an answer that did
         not allow, is a success: the platform is reachable. Only a call that
-        got no answer, or was cancelled, is a failure, so a refusing platform
-        can never open the breaker and turn its refusals into no-answer
-        outcomes.
+        got no answer is a failure, so a refusing platform can never open the
+        breaker and turn its refusals into no-answer outcomes. A call that
+        ended without an outcome (cancelled by its caller) counts neither way.
 
         the breaker probe slot MUST be released even
         when a caller cancels the awaiting task (`asyncio.CancelledError`
@@ -585,7 +617,8 @@ class AxonFlowPlugin(BasePlugin):
                 )
             logger.debug("axonflow.%s skipped: circuit open", op_name)
             return None
-        outcome: str = "failure"  # default if we exit via cancel/BaseException
+        # "cancelled" stays only if we leave through a BaseException.
+        outcome: str = "cancelled"
         try:
             try:
                 result = await asyncio.wait_for(
@@ -601,8 +634,7 @@ class AxonFlowPlugin(BasePlugin):
                 )
             except Exception as exc:  # noqa: BLE001 - intentional broad catch at the boundary
                 failure = _GuardFailure(_classify_failure(exc), self._failure_detail(exc))
-            if failure.failure_class is _FailureClass.NOT_ALLOWED:
-                outcome = "success"
+            outcome = "success" if failure.failure_class is _FailureClass.NOT_ALLOWED else "failure"
             if governed:
                 return failure
             logger.warning(
@@ -613,15 +645,16 @@ class AxonFlowPlugin(BasePlugin):
             )
             return None
         finally:
-            # Always release the breaker slot. `outcome` reflects whether
-            # this counts as a success (resets counter) or a failure
-            # (increments counter, may trip OPEN). On cancellation/
-            # BaseException, we treat as failure — defensive, and
-            # the cancel re-raises through this finally anyway.
+            # Always release the breaker slot. "success" resets the counter,
+            # "failure" increments it (and may trip OPEN), and a cancellation
+            # only frees the slot: it says nothing about whether AxonFlow
+            # answers, and the cancel re-raises through this finally anyway.
             if outcome == "success":
                 await self._breaker.record_success()
-            else:
+            elif outcome == "failure":
                 await self._breaker.record_failure()
+            else:
+                await self._breaker.release()
 
     def _failure_denial(self, op_name: str, failure: _GuardFailure) -> str | None:
         """The posture for a governed call that produced no result.

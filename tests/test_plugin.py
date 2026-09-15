@@ -453,6 +453,47 @@ async def test_circuit_breaker_recovers_after_window(
     assert plugin._breaker.state is _BreakerState.CLOSED
 
 
+async def test_a_refusal_never_opens_the_breaker(fake_client, tool_context, fake_tool):
+    """Five answered refusals against a breaker that opens after three
+    failures: every call is denied, the breaker stays CLOSED, and the sixth
+    call still reaches the platform and is still denied. An open breaker is a
+    no-answer outcome, so a refusal that opened it would turn refusals into
+    allow-with-notice."""
+    from axonflow.exceptions import ConnectorError
+
+    fake_client.raise_on_check_tool_input = ConnectorError("Invalid credentials", "adk-tool", "check-input")
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
+
+    for attempt in range(1, 7):
+        result = await plugin.before_tool_callback(tool=fake_tool, tool_args={"a": 1}, tool_context=tool_context)
+        assert isinstance(result, dict) and "Invalid credentials" in result["error"], f"refusal {attempt} was not denied: {result!r}"
+        assert plugin._breaker.state is _BreakerState.CLOSED, f"the breaker opened after refusal {attempt}"
+    assert sum(1 for c in fake_client.calls if c[0] == "check_tool_input") == 6
+
+
+async def test_cancelled_calls_never_open_the_breaker(fake_client, callback_context, llm_request_with_text):
+    """Calls cancelled by their caller (ADK cancels sibling tool calls when one
+    raises) say nothing about whether AxonFlow answers: they must not count as
+    connection failures, or enough of them would open the breaker."""
+    fake_client.pre_check_delay_seconds = 1.0
+    fake_client.pre_check_result = types.SimpleNamespace(approved=True, context_id="ctx", block_reason=None)
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
+
+    tasks = [
+        asyncio.ensure_future(plugin.before_model_callback(callback_context=callback_context, llm_request=llm_request_with_text))
+        for _ in range(5)
+    ]
+    await asyncio.sleep(0.05)
+    for task in tasks:
+        task.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert all(isinstance(r, asyncio.CancelledError) for r in results), results
+    assert plugin._breaker.state is _BreakerState.CLOSED, "cancellations opened the breaker"
+    assert plugin._breaker.consecutive_failures == 0
+    assert plugin._breaker._probe_in_flight is False
+
+
 # ---------------------------------------------------------------------------
 # 5. Audit hooks never block
 # ---------------------------------------------------------------------------

@@ -15,6 +15,11 @@ call, so here the call is allowed.
 This suite was `require-approval-creates-hitl-row-and-polls`. On v11 it could
 no longer create a HITL row or poll one, so it was renamed to what it checks.
 
+What it cannot catch: because its call is allowed, it passes whether or not
+the plugin mishandles an `approval_required:` refusal. That refusal is
+asserted by `platform-error-posture` (scenario D) and by
+`tests-sdk-wire/test_platform_error_posture_wire.py`.
+
 ## What this catches
 
 - The allowed tool call not running with HITL polling on.

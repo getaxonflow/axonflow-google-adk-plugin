@@ -61,8 +61,8 @@ what happens depends on one question: did the platform ANSWER?
 
 | What happened | Model call | Tool call | Tool result | Setting |
 |---|---|---|---|---|
-| The platform answered with a policy deny | denied with the reason | denied with the reason | withheld | none |
-| The platform answered with an error: a rejected credential (401), a quota (429), a server error (5xx), or an answer that cannot be read | **denied** with the platform's text | **denied** | **withheld** | none: `fail_open` does not apply |
+| The platform answered with a policy deny | denied with the reason | denied with the reason | withheld, or replaced by the platform's masked content | none |
+| The platform answered with an error: a rejected credential (401), a quota (429), a server error (5xx), or an answer that cannot be read | **denied**, with the error the SDK reports | **denied** | **withheld** | none: `fail_open` does not apply |
 | No answer: the connection failed, the call timed out (`call_timeout_seconds`, default 5s), or the circuit breaker is open | proceeds **ungoverned**, with a WARNING notice | proceeds ungoverned, with a WARNING notice | passed through, with a WARNING notice | `fail_open=True` (the default); `fail_open=False` denies all three |
 
 ```python
@@ -81,7 +81,15 @@ AxonFlowPlugin(endpoint=..., client_id=..., client_secret=...,
 - **Why a 401, a 429 and a 5xx are treated alike.** The `axonflow` SDK reports
   them as the same error on the tool checks, without the HTTP status, so the
   plugin cannot tell them apart. A server error that answers therefore denies
-  too; it is never read as an allow.
+  too; it is never read as an allow. That includes a load balancer or proxy in
+  front of an AxonFlow that is down: its 502 or 503 is an answer, so calls are
+  denied even with `fail_open=True`, which covers only a platform that cannot
+  be reached at all.
+- **A broken answer is not "no answer".** An answer cut off partway, a port
+  that does not speak HTTP, a proxy that refuses the request and a malformed
+  endpoint URL all deny. The one exception is a connection that cannot be made
+  at all (refused, DNS, TLS): the plugin cannot tell a wrong host from an
+  outage, so that follows `fail_open`.
 - **The circuit breaker** (default: open after 5 consecutive failures, recover
   after 30s; HALF_OPEN admits exactly one probe) counts only calls that got no
   answer. **A refusal never opens the breaker**, so a platform that refuses
