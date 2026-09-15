@@ -85,11 +85,18 @@ AxonFlowPlugin(endpoint=..., client_id=..., client_secret=...,
   front of an AxonFlow that is down: its 502 or 503 is an answer, so calls are
   denied even with `fail_open=True`, which covers only a platform that cannot
   be reached at all.
-- **A broken answer is not "no answer".** An answer cut off partway, a port
-  that does not speak HTTP, a proxy that refuses the request and a malformed
-  endpoint URL all deny. The one exception is a connection that cannot be made
-  at all (refused, DNS, TLS): the plugin cannot tell a wrong host from an
-  outage, so that follows `fail_open`.
+- **A broken answer is not "no answer".** An answer the server cuts off by
+  closing the connection partway, a connection it closes after the request
+  without answering, a port that does not speak HTTP, a proxy that refuses the
+  request and a malformed endpoint URL all deny. Two network failures follow
+  `fail_open` instead: a connection that cannot be made at all (refused, DNS,
+  TLS), because the plugin cannot tell a wrong host from an outage, and a
+  connection reset (RST), even partway through an answer.
+- **The cost of that strictness.** A server or proxy that closes an idle
+  keep-alive connection just as the SDK reuses it produces "server
+  disconnected without sending a response", and that call is denied. The SDK
+  keeps httpx's default 5-second keep-alive expiry, so this can happen in front
+  of a server or proxy whose own keep-alive timeout is 5 seconds or less.
 - **The circuit breaker** (default: open after 5 consecutive failures, recover
   after 30s; HALF_OPEN admits exactly one probe) counts only calls that got no
   answer. **A refusal never opens the breaker**, so a platform that refuses

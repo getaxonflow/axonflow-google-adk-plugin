@@ -31,9 +31,11 @@ Three hard design constraints:
        `AxonFlowPluginConfig.fail_open` decides. True (the default) lets
        the call proceed UNGOVERNED with a WARNING notice; False denies it.
 
-   An answer that broke off partway, a proxy's refusal, and a load
-   balancer's 502 / 503 in front of an AxonFlow that is down are all
-   answers, so they deny even with `fail_open=True`.
+   An answer the server cut off by closing the connection, a proxy's
+   refusal, and a load balancer's 502 / 503 in front of an AxonFlow that is
+   down are all answers, so they deny even with `fail_open=True`. A
+   connection reset (RST), even partway through an answer, is a network
+   failure and follows `fail_open`.
 
    The audit hooks never block.
 

@@ -471,13 +471,17 @@ async def test_a_refusal_never_opens_the_breaker(fake_client, tool_context, fake
     assert sum(1 for c in fake_client.calls if c[0] == "check_tool_input") == 6
 
 
-async def test_cancelled_calls_never_open_the_breaker(fake_client, callback_context, llm_request_with_text):
+async def test_cancelled_calls_count_neither_way(fake_client, callback_context, llm_request_with_text):
     """Calls cancelled by their caller (ADK cancels sibling tool calls when one
-    raises) say nothing about whether AxonFlow answers: they must not count as
-    connection failures, or enough of them would open the breaker."""
+    raises) say nothing about whether AxonFlow answers. They must not count as
+    connection failures, or enough of them would open the breaker; and they
+    must not count as successes, or they would reset real failures. The
+    breaker starts with two failures already counted, so either miscount moves
+    the count."""
     fake_client.pre_check_delay_seconds = 1.0
     fake_client.pre_check_result = types.SimpleNamespace(approved=True, context_id="ctx", block_reason=None)
     plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
+    plugin._breaker.consecutive_failures = 2
 
     tasks = [
         asyncio.ensure_future(plugin.before_model_callback(callback_context=callback_context, llm_request=llm_request_with_text))
@@ -490,8 +494,30 @@ async def test_cancelled_calls_never_open_the_breaker(fake_client, callback_cont
 
     assert all(isinstance(r, asyncio.CancelledError) for r in results), results
     assert plugin._breaker.state is _BreakerState.CLOSED, "cancellations opened the breaker"
-    assert plugin._breaker.consecutive_failures == 0
-    assert plugin._breaker._probe_in_flight is False
+    assert plugin._breaker.consecutive_failures == 2, "a cancellation was counted as a success or a failure"
+
+
+async def test_a_cancelled_half_open_probe_frees_the_slot_and_keeps_the_state(fake_client, callback_context, llm_request_with_text):
+    """A HALF_OPEN probe cancelled mid-call frees the probe slot and leaves the
+    breaker HALF_OPEN with its failure count: a cancellation neither closes the
+    breaker (a success) nor re-opens it (a failure)."""
+    fake_client.pre_check_delay_seconds = 1.0
+    fake_client.pre_check_result = types.SimpleNamespace(approved=True, context_id="ctx", block_reason=None)
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3, breaker_recovery_seconds=0.01)
+    plugin._breaker.consecutive_failures = 3
+    plugin._breaker.state = _BreakerState.OPEN
+    plugin._breaker.opened_at = 0.0  # the recovery window has long passed
+
+    probe = asyncio.ensure_future(plugin.before_model_callback(callback_context=callback_context, llm_request=llm_request_with_text))
+    await asyncio.sleep(0.05)
+    assert plugin._breaker.state is _BreakerState.HALF_OPEN and plugin._breaker._probe_in_flight is True
+    probe.cancel()
+    result = await asyncio.gather(probe, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError), result
+    assert plugin._breaker._probe_in_flight is False, "the cancelled probe leaked its slot"
+    assert plugin._breaker.state is _BreakerState.HALF_OPEN, f"a cancelled probe moved the breaker to {plugin._breaker.state.value}"
+    assert plugin._breaker.consecutive_failures == 3
 
 
 # ---------------------------------------------------------------------------
