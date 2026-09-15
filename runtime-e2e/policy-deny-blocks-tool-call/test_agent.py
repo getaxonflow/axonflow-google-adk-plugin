@@ -3,8 +3,10 @@
 
 """Verify that a tool call blocked by AxonFlow policy is denied.
 
-Prerequisite: a deny policy for 'disburse_payment' has been inserted
-into static_policies by test.sh BEFORE this script runs.
+The tool call's `command` argument is a destructive shell command, which the
+platform's shipped sys_dangerous_destructive_fs control blocks on the
+check-input pass. No policy is seeded: since AxonFlow v11.0.0 a row written
+straight into static_policies authors no verdict.
 
 The plugin's before_tool_callback should return an error dict that
 prevents the tool from executing. The test verifies that:
@@ -31,12 +33,12 @@ from _lib.stub_model import StubModel
 TOOL_EXECUTED = False
 
 
-def disburse_payment(amount: int, destination: str) -> dict:
-    """Disburse payment to a destination account."""
+def run_maintenance(command: str) -> dict:
+    """Run a maintenance shell command on the host."""
     global TOOL_EXECUTED
     TOOL_EXECUTED = True
-    print(f"  !!! TOOL FUNCTION INVOKED: amount={amount}, destination={destination}")
-    return {"status": "ok", "amount": amount, "destination": destination}
+    print(f"  !!! TOOL FUNCTION INVOKED: command={command}")
+    return {"status": "ok", "command": command}
 
 
 async def main() -> int:
@@ -56,16 +58,17 @@ async def main() -> int:
     )
 
     model = StubModel(
-        tool_name="disburse_payment",
-        tool_args={"amount": 50000, "destination": "ACCT-999"},
-        final_text="Transfer completed.",
+        tool_name="run_maintenance",
+        # Matches sys_dangerous_destructive_fs's `rm\\s+-rf\\s+/`.
+        tool_args={"command": "rm -rf /var/lib/adk-e2e-scratch"},
+        final_text="Maintenance completed.",
     )
 
     agent = LlmAgent(
         model=model,
         name="e2e_deny_agent",
-        instruction="You disburse payments. Call disburse_payment with the amount and destination.",
-        tools=[disburse_payment],
+        instruction="You run host maintenance. Call run_maintenance with the command.",
+        tools=[run_maintenance],
     )
 
     runner = InMemoryRunner(
@@ -83,16 +86,16 @@ async def main() -> int:
     async for event in runner.run_async(
         user_id="e2e-user",
         session_id=session.id,
-        new_message=genai_types.Content(role="user", parts=[genai_types.Part(text="Disburse $50,000 to ACCT-999")]),
+        new_message=genai_types.Content(role="user", parts=[genai_types.Part(text="Clear the scratch directory")]),
     ):
         events.append(event)
         print(f"  event: {event}")
 
     await plugin.aclose()
 
-    # With a deny policy in the DB, the tool should NOT have executed
+    # The shipped destructive-command control denies the call: the tool must NOT run
     if TOOL_EXECUTED:
-        print("FAIL: tool executed despite deny policy")
+        print("FAIL: tool executed despite the shipped deny control")
         return 1
 
     # Check events for the deny signal
@@ -106,7 +109,7 @@ async def main() -> int:
             if "[AxonFlow]" in text or "denied" in text.lower():
                 print(f"  [AxonFlow] denial signal found: {text[:200]}")
 
-    print("OK: policy-deny-blocks-tool-call (deny policy active, tool not executed)")
+    print("OK: policy-deny-blocks-tool-call (shipped deny control, tool not executed)")
     return 0
 
 
