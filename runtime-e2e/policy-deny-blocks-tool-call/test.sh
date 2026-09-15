@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# test.sh — Verify that a deny policy blocks a tool call and records
-# a denied decision in audit_logs.
+# test.sh — Verify that a policy deny blocks a tool call and records the
+# check in mcp_query_audits.
+#
+# The deny comes from a control the platform ships: sys_dangerous_destructive_fs
+# (migration core/059) blocks `rm -rf /`-shaped commands, and the check-input
+# pass reads the tool call's parameters as well as its name. Since AxonFlow
+# v11.0.0 the anchored engine decides check-input, and a row written straight
+# into static_policies authors no verdict, so this test no longer seeds one.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,35 +21,7 @@ DB_PORT="${DB_PORT:-15432}"
 echo "=== policy-deny-blocks-tool-call ==="
 echo "  endpoint: $AXONFLOW_ENDPOINT"
 
-# SETUP: insert a deny policy into static_policies
-echo "  inserting deny policy..."
-psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -c "
-INSERT INTO static_policies (policy_id, name, category, pattern, severity, action, enabled, tenant_id, org_id)
-VALUES ('e2e-deny-tool', 'E2E deny test', 'security-dangerous', '.*disburse_payment.*', 'high', 'block', true, 'global', '')
-ON CONFLICT (policy_id) DO NOTHING;
-"
-
-# The policy engine caches policies at startup — restart the agent
-# so the new policy is loaded into the engine's in-memory cache.
-echo "  restarting agent to pick up new policy..."
-docker restart adk-e2e-agent > /dev/null 2>&1
-for i in $(seq 1 30); do
-  if curl -sf -o /dev/null --max-time 2 "$AXONFLOW_ENDPOINT/health" 2>/dev/null; then
-    echo "  agent restarted (${i}s)"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then echo "FAIL: agent not healthy after restart"; exit 1; fi
-  sleep 1
-done
-
-cleanup() {
-  echo "  cleaning up deny policy..."
-  psql -h "$DB_HOST" -p "$DB_PORT" -U axonflow -d axonflow -c \
-    "DELETE FROM static_policies WHERE policy_id = 'e2e-deny-tool';" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# RUN: execute the agent test (attempts to use the blocked tool)
+# RUN: execute the agent test (its tool call carries a destructive command)
 cd "$E2E_DIR"
 python_exit=0
 python3 "$SCRIPT_DIR/test_agent.py" > /tmp/policy-deny-output.log 2>&1 || python_exit=$?
@@ -61,7 +39,8 @@ if ! grep -qi '\[AxonFlow\]' /tmp/policy-deny-output.log && ! grep -qi 'denied' 
 fi
 echo "  denial signal found in output"
 
-# ASSERT: query audit_logs for a denied decision
+# ASSERT: the tool call reached the platform and left an adk-tool row in
+# mcp_query_audits (the hooks fired; any adk-tool row satisfies it)
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
 echo "PASS: policy-deny-blocks-tool-call"
