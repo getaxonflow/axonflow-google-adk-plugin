@@ -4,8 +4,8 @@ AxonFlow governance plugin for [Google Agent Development Kit (ADK)](https://adk.
 
 Register `AxonFlowPlugin` once on a `Runner` and **every model call and every
 tool call across every agent on that Runner** is governed by AxonFlow
-policies: pre-check, HITL approval, deny short-circuit, audit trail, PII
-redaction on tool I/O.
+policies: pre-check, deny short-circuit, audit trail, PII redaction on tool
+I/O, and HITL approval on platforms before v11.0.0.
 
 ## Install
 
@@ -13,7 +13,7 @@ redaction on tool I/O.
 pip install axonflow-google-adk-plugin
 ```
 
-Requires `google-adk>=2.0` and `axonflow>=8.2.0` (AxonFlow Python SDK).
+Requires `google-adk[mcp]>=2.0.0` and `axonflow>=9.3.0` (AxonFlow Python SDK).
 
 ## Quickstart (5 lines)
 
@@ -49,10 +49,90 @@ The `on_user_message_callback` hook is intentionally a no-op in v1 — returning
 non-None Content there would silently **replace** the user's message, which is
 the wrong tool for governance.
 
-## HITL approval flow — 4-step
+What a governed call does when it does not return an allow (a rejected
+credential, a quota, a server error, no answer) is in
+[Failure semantics](#failure-semantics).
 
-When AxonFlow policy evaluates to `require_approval`, the plugin runs the
-full **4-step HITL flow** by default (`enable_hitl_polling=True`):
+## Failure semantics
+
+A governed call is `pre_check` (before the model), `check_tool_input` (before a
+tool) or `check_tool_output` (after a tool). When one does not return an allow,
+what happens depends on one question: did the platform ANSWER?
+
+| What happened | Model call | Tool call | Tool result | Setting |
+|---|---|---|---|---|
+| The platform answered with a policy deny | denied with the reason | denied with the reason | withheld, or replaced by the platform's masked content | none |
+| The platform answered with an error: a rejected credential (401), a quota (429), a server error (5xx), or an answer that cannot be read | **denied**, with the error the SDK reports | **denied** | **withheld** | none: `fail_open` does not apply |
+| No answer: the connection failed, the call timed out (`call_timeout_seconds`, default 5s), or the circuit breaker is open | proceeds **ungoverned**, with a WARNING notice | proceeds ungoverned, with a WARNING notice | passed through, with a WARNING notice | `fail_open=True` (the default); `fail_open=False` denies all three |
+
+```python
+from axonflow_adk.plugin import AxonFlowPluginConfig
+
+# Deny the call when AxonFlow cannot be reached, instead of running it ungoverned.
+AxonFlowPlugin(endpoint=..., client_id=..., client_secret=...,
+               config=AxonFlowPluginConfig(fail_open=False))
+```
+
+- **The notice.** Every call that proceeds ungoverned logs a WARNING on the
+  `axonflow_adk.plugin` logger, for example `AxonFlow check_tool_input got no
+  answer (ConnectError: All connection attempts failed); the call proceeds
+  UNGOVERNED because fail_open is True`. With no logging configured, Python
+  prints WARNING records to stderr.
+- **Why a 401, a 429 and a 5xx are treated alike.** The `axonflow` SDK reports
+  them as the same error on the tool checks, without the HTTP status, so the
+  plugin cannot tell them apart. A server error that answers therefore denies
+  too; it is never read as an allow. That includes a load balancer or proxy in
+  front of an AxonFlow that is down: its 502 or 503 is an answer, so calls are
+  denied even with `fail_open=True`, which covers only a platform that cannot
+  be reached at all.
+- **A broken answer is not "no answer".** An answer the server cuts off by
+  closing the connection partway, a connection it closes after the request
+  without answering, a port that does not speak HTTP, a proxy that refuses the
+  request and a malformed endpoint URL all deny. Two network failures follow
+  `fail_open` instead: a connection that cannot be made at all (refused, DNS,
+  TLS), because the plugin cannot tell a wrong host from an outage, and a
+  connection reset (RST), even partway through an answer.
+- **The cost of that strictness.** A server or proxy that closes an idle
+  keep-alive connection just as the SDK reuses it produces "server
+  disconnected without sending a response", and that call is denied. The SDK
+  keeps httpx's default 5-second keep-alive expiry, so this can happen in front
+  of a server or proxy whose own keep-alive timeout is 5 seconds or less.
+- **The circuit breaker** (default: open after 5 consecutive failures, recover
+  after 30s; HALF_OPEN admits exactly one probe) counts only calls that got no
+  answer. **A refusal never opens the breaker**, so a platform that refuses
+  keeps being asked, and its refusals are never turned into ungoverned calls.
+- The audit hooks (`audit_llm_call`, `audit_tool_call`) never block.
+
+## Platform requests per tool call
+
+One agent turn that calls one tool makes seven requests to AxonFlow (measured
+through a real ADK `Runner` against AxonFlow v11.0.0):
+
+| Request | Count | What it is for |
+|---|---|---|
+| `POST /api/policy/pre-check` | 2 | one per model call: the call that chooses the tool, and the call that answers with its result |
+| `POST /api/audit/llm-call` | 2 | the audit record of each model call |
+| `POST /api/v1/mcp/check-input` | 1 | the tool's arguments, before the tool runs |
+| `POST /api/v1/mcp/check-output` | 1 | the tool's result, before the model sees it |
+| `POST /api/v1/audit/tool-call` | 1 | the audit record of the tool call |
+
+Each governs or records a different model call or tool step, so none is
+dropped. Every one counts against any request rate or quota your deployment
+enforces, such as a Community SaaS Free-tier limit: size an agent's tool-call
+rate at a seventh of that request limit.
+
+## HITL approval flow — 4-step (platforms before v11.0.0)
+
+> **AxonFlow v11.0.0 and later never hold a call on the planes this plugin
+> drives.** An approval-requiring call is refused with a `block_reason`
+> beginning `approval_required:` ("... refused rather than held"), and the
+> plugin denies it like any other policy deny: no HITL row is created and
+> nothing is polled, whatever `enable_hitl_polling` is set to. The flow below
+> applies to earlier platforms, which answer the exact `require_approval`
+> sentinel.
+
+When a pre-v11 platform evaluates a policy to `require_approval`, the plugin
+runs the full **4-step HITL flow** by default (`enable_hitl_polling=True`):
 
 ```
 before_model_callback / before_tool_callback
@@ -78,14 +158,14 @@ before_model_callback / before_tool_callback
 ```
 
 The plugin's `before_model_callback` and `before_tool_callback` both run
-this flow. Detection is an exact-string match against the platform's
+this flow. Detection is an exact-string match against the pre-v11
 `require_approval` sentinel. Substring matching previously false-positived
 on any policy whose reason text contained the word "approval".
 
-The 4-step flow is the only **fail-closed** path in the plugin —
-everything else fails open. Approvals are safety-critical; defaulting to
-"allow" on an AxonFlow outage during an approval gate would defeat the
-gate.
+The 4-step flow fails closed: a queue row that cannot be created, a poll
+that keeps failing, a rejection, an expiry and a wait that runs out all
+deny. Approvals are safety-critical; defaulting to "allow" on an AxonFlow
+outage during an approval gate would defeat the gate.
 
 ### Approving / rejecting out-of-band
 
@@ -134,18 +214,8 @@ For **community mode** (no tenant signing key), leave the state key
 unset; the plugin will use `config.default_user_token` (default
 `"anonymous"`).
 
-## Failure semantics
-
-A buggy or unreachable AxonFlow **must not** break the agent. The plugin
-ships with:
-
-- **Per-hook timeout** (default 5s, configurable via `call_timeout_seconds`)
-- **Half-open circuit breaker** (default open after 5 consecutive failures,
-  recover after 30s). HALF_OPEN admits exactly one probe; concurrent
-  hooks during recovery are skipped without leaking a thundering herd.
-- **Fail-open default** — every hook except `_await_hitl_decision`
-  returns `None` on error/timeout/open-circuit, letting the model or
-  tool call proceed.
+A rejected token is a 401, and a 401 denies every governed model and tool
+call (see [Failure semantics](#failure-semantics)).
 
 ## MCP toolset helper
 

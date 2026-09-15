@@ -9,10 +9,9 @@ against the **real** ``axonflow`` SDK and asserts the audit request the plugin
 builds actually serializes ``caller_name`` (and the deprecated ``tool_type``)
 onto the wire body POSTed to ``/api/v1/audit/tool-call``.
 
-``caller_name`` is only present on the SDK from the migration onward
-(v9.11.0-aligned; unreleased on PyPI at authoring time), so the dedicated
-``sdk-wire-contract`` CI job installs the caller_name-capable SDK from a pinned
-git build before running these tests. They are NOT collected by the default
+``caller_name`` is only present on the SDK from the migration onward, so the
+dedicated ``sdk-wire-contract`` CI job runs these tests against the SDK the
+plugin's own dependency resolves. They are NOT collected by the default
 ``pytest`` run (``testpaths = ["tests"]``); the job invokes this directory
 explicitly. Nothing here skips — if the installed SDK lacks ``caller_name`` the
 test fails loudly, which is exactly the drift we want CI to catch.

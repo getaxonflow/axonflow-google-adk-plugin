@@ -24,12 +24,16 @@ DB_USER="${DB_USER:-axonflow}"
 DB_PASSWORD="${DB_PASSWORD:-localdev123}"
 
 TEAR_DOWN=true
-ALL_TESTS="agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success require-approval-creates-hitl-row-and-polls mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned on-tool-error-callback-fires sequential-runs-breaker-stable breaker-opens-on-stack-down on-user-message-callback-fires tool-result-redaction"
+# Every suite directory, and only those. _lib/check-suite-list.sh fails when this
+# list and the directories holding a test.sh differ, and the release workflow
+# runs exactly what it prints.
+ALL_TESTS="agent-runs-with-plugin-registered policy-deny-blocks-tool-call audit-recorded-on-tool-success hitl-polling-on-allowed-call-writes-no-hitl-row mcp-toolset-loads-axonflow-tools agent-tool-bypass-gotcha-pinned on-tool-error-callback-fires sequential-runs-breaker-stable breaker-opens-on-stack-down on-user-message-callback-fires tool-result-redaction platform-error-posture"
 SELECTED_TESTS="${TESTS:-$ALL_TESTS}"
 
 for arg in "$@"; do
   case "$arg" in
     --no-down) TEAR_DOWN=false ;;
+    --list) printf '%s\n' $ALL_TESTS; exit 0 ;;
     *) echo "Unknown arg: $arg"; exit 2 ;;
   esac
 done
@@ -102,16 +106,18 @@ run_test() {
 
   log "--- Test: $test_name ---"
 
+  # A listed suite that is missing is a failure, not a skip: a skipped suite
+  # is a check that silently stopped running.
   if [ ! -d "$test_name" ]; then
-    log "SKIP: $test_name/ not found"
-    record "$test_name" SKIP "dir not found"
+    log "FAIL: $test_name/ not found"
+    record "$test_name" FAIL "dir not found"
     return 0
   fi
 
   local test_script="$test_name/test.sh"
   if [ ! -f "$test_script" ]; then
-    log "SKIP: no test.sh in $test_name/"
-    record "$test_name" SKIP "no test.sh"
+    log "FAIL: no test.sh in $test_name/"
+    record "$test_name" FAIL "no test.sh"
     return 0
   fi
 

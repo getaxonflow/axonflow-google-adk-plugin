@@ -190,8 +190,25 @@ case "${1:-}" in
     exit 0
     ;;
 
+  hitl-absent)
+    client_id="${2:?usage: verify-db.sh hitl-absent <client_id>}"
+    validate_safe_string "$client_id" "client_id"
+    count=$(psql_param -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM hitl_approval_queue WHERE client_id = '$client_id'")
+    # An absence check must not pass on a read that returned nothing usable.
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+      echo "FAIL: could not count hitl_approval_queue rows for client_id='$client_id' (got '$count')"
+      exit 1
+    fi
+    if [ "$count" -gt 0 ]; then
+      echo "FAIL: found $count unexpected row(s) in hitl_approval_queue for client_id='$client_id'"
+      exit 1
+    fi
+    echo "OK: no hitl_approval_queue rows for client_id='$client_id' (expected)"
+    exit 0
+    ;;
+
   *)
-    echo "Usage: $0 {audit-row-exists|audit-row-count|hitl-row|hitl-field|table-row-count|audit-log-exists|audit-log-denied|mcp-audit-exists|hitl-exists|audit-log-absent} ..."
+    echo "Usage: $0 {audit-row-exists|audit-row-count|hitl-row|hitl-field|table-row-count|audit-log-exists|audit-log-denied|mcp-audit-exists|hitl-exists|audit-log-absent|hitl-absent} ..."
     exit 2
     ;;
 esac

@@ -1,17 +1,20 @@
 # Copyright 2026 AxonFlow
 # SPDX-License-Identifier: MIT
 
-"""Verify require_approval policy behavior through Runner.run_async.
+"""Verify that HITL polling holds nothing on an allowed call against a v11 platform.
 
-In community mode, require_approval policies auto-approve (HITL is
-enterprise-only). This test verifies:
+`enable_hitl_polling=True` is on. From AxonFlow v11.0.0 the platform never
+holds a call on the planes this plugin drives: an approval-requiring call is
+refused with a `block_reason` beginning `approval_required:`, which the plugin
+denies without a hold (proven through the stub channel in
+platform-error-posture, scenario D). None of the platform's shipped controls
+gives an approval verdict for this tool call, so it is allowed.
 
-  1. AxonFlowPlugin is registered on the Runner
-  2. Runner.run_async exercises the full governance hook chain
-  3. The tool executes (community mode auto-approves require_approval)
-  4. Audit rows are created in the DB
-
-In enterprise mode, the same test would see the HITL flow fire.
+This test verifies, through Runner.run_async against the live stack:
+  1. The tool runs: the call is allowed and nothing holds it.
+  2. The plugin never entered the hold: no "AWAITING APPROVAL" log line.
+  3. No HITL row was written for this suite's client id (asserted in test.sh
+     against hitl_approval_queue).
 """
 
 from __future__ import annotations
@@ -33,7 +36,18 @@ from _lib.stub_model import StubModel
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 
+# The client id a HITL row would carry (`_effective_client_id`); test.sh asserts
+# no row exists for it. Unique to this suite, so another suite's rows cannot
+# satisfy or break the assertion.
+CLIENT_ID = "e2e-hitl-polling"
+
 TOOL_EXECUTED = False
+
+
+from _lib.notices import capture_plugin_log  # noqa: E402
+
+# The plugin's INFO records: the hold logs "AWAITING APPROVAL" at INFO.
+PLUGIN_LOG = capture_plugin_log(logging.INFO)
 
 
 def disburse_funds(amount: int, destination: str) -> dict:
@@ -49,12 +63,11 @@ def disburse_funds(amount: int, destination: str) -> dict:
 
 
 async def main() -> int:
-    global TOOL_EXECUTED
     endpoint = os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:18080")
 
     plugin = AxonFlowPlugin(
         endpoint=endpoint,
-        client_id="e2e-test",
+        client_id=CLIENT_ID,
         client_secret="",
         config=AxonFlowPluginConfig(
             call_timeout_seconds=10.0,
@@ -106,19 +119,20 @@ async def main() -> int:
     if not events:
         print("FAIL: no events received from runner")
         return 1
-
     print(f"  received {len(events)} event(s)")
 
-    # In community mode, require_approval auto-approves.
-    # The tool should execute normally.
-    if TOOL_EXECUTED:
-        print("  tool executed (community mode auto-approved require_approval)")
-    else:
-        print("  tool NOT executed (enterprise HITL may have fired)")
+    if not TOOL_EXECUTED:
+        print("FAIL: the allowed tool call did not run")
+        return 1
+    print("  tool executed: the call was allowed and nothing held it")
 
-    # Either way, the test passes — the customer entry point (Runner.run_async)
-    # was exercised with AxonFlowPlugin + enable_hitl_polling=True.
-    print("OK: require-approval-creates-hitl-row-and-polls")
+    held = [m for m in PLUGIN_LOG.messages if "AWAITING APPROVAL" in m]
+    if held:
+        print(f"FAIL: the plugin entered the HITL hold on a v11 platform: {held}")
+        return 1
+    print("  no AWAITING APPROVAL line: the hold was never entered")
+
+    print("OK: hitl-polling-on-allowed-call-writes-no-hitl-row")
     return 0
 
 

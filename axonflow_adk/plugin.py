@@ -15,18 +15,36 @@ Three hard design constraints:
    Auth, retry, observability, and version pinning are inherited from the
    SDK that already ships to PyPI as `axonflow>=8.0`.
 
-2. **A buggy plugin must not break the agent.** Every hook is wrapped by a
-   per-call timeout (default 5s) and a half-open circuit breaker (default
-   open after 5 consecutive failures, recover after 30s). When the circuit
-   is open or a hook errors, the plugin **fails open** (returns None and
-   lets the model/tool call proceed) so an AxonFlow outage cannot take
-   down every ADK agent registered on the Runner.
+2. **An unreachable AxonFlow must not break the agent, and a refusing one
+   must not be ignored.** Every hook is wrapped by a per-call timeout
+   (default 5s) and a half-open circuit breaker (default open after 5
+   consecutive connection failures, recover after 30s). What a FAILED
+   governed call (`pre_check`, `check_tool_input`, `check_tool_output`)
+   does is one table, `_classify_failure`:
 
-3. **`require_approval` fails closed.** Unlike the generic failure path,
-   when policy explicitly requires human approval, the plugin polls the
-   HITL queue and short-circuits the call with a deny on rejection,
-   expiry, or polling timeout. Approvals are safety-critical; defaulting
-   to "allow" here would silently bypass governance.
+     - The platform ANSWERED and did not allow: a 401, a 403 the SDK
+       raises, a 429, a 5xx, an answer that cannot be read, or any failure
+       that is not a connection failure. The call is DENIED with the
+       platform's text. No setting changes this.
+     - NO ANSWER arrived: the connection could not be made, a read or write
+       failed on the network, the call timed out, or the breaker is open.
+       `AxonFlowPluginConfig.fail_open` decides. True (the default) lets
+       the call proceed UNGOVERNED with a WARNING notice; False denies it.
+
+   An answer the server cut off by closing the connection, a proxy's
+   refusal, and a load balancer's 502 / 503 in front of an AxonFlow that is
+   down are all answers, so they deny even with `fail_open=True`. A
+   connection reset (RST), even partway through an answer, is a network
+   failure and follows `fail_open`.
+
+   The audit hooks never block.
+
+3. **`require_approval` fails closed (platforms before v11.0.0).** When a
+   pre-v11 platform answers the exact `require_approval` sentinel, the
+   plugin polls the HITL queue and denies on rejection, expiry, or polling
+   timeout. From v11.0.0 the platform never holds on the planes this plugin
+   drives: it REFUSES, with a `block_reason` beginning `approval_required:`,
+   and that is a plain deny here. The hold branch is not entered on v11.
 
 The plugin signatures match `BasePlugin` exactly (keyword-only args, async
 def, optional return). See
@@ -42,9 +60,10 @@ OpenAI Agents SDK):
     positional binding rules.
   • The 4-step HITL flow is canonical: gate → create_hitl_row → poll →
     resume/deny. Same shape in every language.
-  • Defensive defaults (timeout, half-open breaker, fail-open per hook,
-    fail-closed on approvals) are part of the contract, not the
-    implementation — clone them.
+  • Defensive defaults (timeout; a half-open breaker that only no-answer
+    failures open; a deny on every answer that did not allow; `fail_open`
+    for no answer only, with a notice; fail-closed on approvals) are part
+    of the contract, not the implementation — clone them.
   • `enable_hitl_polling` defaults to True. Callers who want
     deny-fast must set False explicitly.
 """
@@ -78,6 +97,9 @@ if TYPE_CHECKING:
 # discovery, and so import failures surface at agent boot rather than at
 # the first hook call (where they could otherwise bypass `_call_with_guard`
 # and break the agent).
+import httpx
+from axonflow.exceptions import ConnectionError as _SdkConnectionError
+from axonflow.exceptions import TimeoutError as _SdkTimeoutError
 from axonflow.types import AuditToolCallRequest, TokenUsage
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -111,13 +133,81 @@ class _BreakerState(Enum):
     HALF_OPEN = "half_open"
 
 
+class _FailureClass(Enum):
+    """What a failed governed call means. The class decides the posture."""
+
+    # The platform answered and did not allow, its answer could not be read,
+    # or the call failed some other way that is not a connection failure.
+    # Always denied.
+    NOT_ALLOWED = "not_allowed"
+    # No answer arrived: the connection failed, the call timed out, or the
+    # breaker is open after repeated connection failures. `fail_open` decides.
+    UNREACHABLE = "unreachable"
+
+
+# The failures that mean NO ANSWER ARRIVED; anything else a governed call
+# raises is NOT_ALLOWED. Read against the SDK this plugin runs on (axonflow
+# 9.4.0): `check_tool_input` / `check_tool_output` post through the SDK's
+# httpx client directly, so their transport failures escape as httpx's own
+# classes, while `pre_check` maps them to the SDK's ConnectionError /
+# TimeoutError (which are NOT the builtins). The builtins cover a transport
+# below httpx and asyncio's own timeout (a distinct class before Python 3.11).
+#
+# No answer is: the connection could not be made (refused, DNS, TLS: an
+# outage and a wrong host look the same here), a read or write failed on the
+# network (httpx.NetworkError), or the call timed out. Deliberately absent, so
+# they DENY: httpx.RemoteProtocolError (an answer that broke off or was not
+# HTTP, e.g. a 401 whose body was cut short, or a port that does not speak
+# HTTP), httpx.ProxyError (a proxy that refused the request), and
+# UnsupportedProtocol / InvalidURL (a malformed endpoint). Those are
+# answers or configuration errors, and reading them as no answer would let
+# every call run ungoverned.
+_NO_ANSWER_FAILURES: tuple[type[BaseException], ...] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    _SdkConnectionError,
+    _SdkTimeoutError,
+    ConnectionError,
+    TimeoutError,
+    asyncio.TimeoutError,
+)
+
+
+def _classify_failure(exc: BaseException) -> _FailureClass:
+    """The status-class table for a failed governed call.
+
+    Two rows, not one per HTTP status: the SDK does not carry the status on
+    the tool path (every non-2xx answer except 403 is one `ConnectorError`),
+    so a 401, a 429 and a 5xx are indistinguishable here, and all three are
+    answers that did not allow.
+    """
+    if isinstance(exc, _NO_ANSWER_FAILURES):
+        return _FailureClass.UNREACHABLE
+    return _FailureClass.NOT_ALLOWED
+
+
+# Bound on the exception text a deny reason or a notice carries: enough for the
+# platform's own sentence, short enough that a large error body does not flood
+# the model's context or the log.
+_FAILURE_DETAIL_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class _GuardFailure:
+    """A governed call that produced no result: its failure class and detail."""
+
+    failure_class: _FailureClass
+    detail: str
+
+
 class _CircuitBreaker:
     """Half-open circuit breaker around the AxonFlow client.
 
     The breaker exists so that an AxonFlow outage cannot take down every
-    ADK agent registered on the Runner. When the circuit is open the
-    plugin fails open (returns None) on every hook until the recovery
-    window elapses. HALF_OPEN admits exactly ONE probe at a time
+    ADK agent registered on the Runner. Only calls that got no answer open
+    it. While it is open, every governed hook is a no-answer outcome until
+    the recovery window elapses: `fail_open` decides whether the call
+    proceeds (with a WARNING notice) or is denied. HALF_OPEN admits exactly ONE probe at a time
     — concurrent hook invocations during recovery do not
     leak a thundering herd onto a still-recovering AxonFlow.
 
@@ -173,21 +263,40 @@ class _CircuitBreaker:
                 self.opened_at = time.monotonic()
             self._probe_in_flight = False
 
+    async def release(self) -> None:
+        """Free the probe slot without counting the call either way.
+
+        For a call that ended without an outcome (cancelled by its caller):
+        it says nothing about whether AxonFlow answers, so it must neither
+        reset the failure count nor add to it. ADK cancels sibling tool calls
+        when one of them raises; counted as failures, those cancellations
+        could open the breaker and turn a platform that is answering into
+        no-answer outcomes.
+        """
+        async with self._lock:
+            self._probe_in_flight = False
+
 
 @dataclass
 class AxonFlowPluginConfig:
     """Tunable knobs. All have safe defaults — most users do not set these."""
 
-    # Per-hook deadline. AxonFlow REST calls that exceed this are abandoned
-    # and the hook fails open (or fails closed for approvals — see below).
+    # Per-hook deadline. An AxonFlow REST call that exceeds this is abandoned
+    # and counts as no answer: see `fail_open` below.
     call_timeout_seconds: float = 5.0
     # Default `user_token` propagated when ADK's invocation context does not
     # carry one. Override via callback_context state['axonflow_user_token'].
     # In enterprise mode this MUST be a JWT, not a free-form identifier
     # — the platform's apiAuthMiddleware rejects non-JWTs.
     default_user_token: str = "anonymous"
-    # HITL polling is ENABLED by default — the plugin runs the full
-    # 4-step approval flow:
+    # HITL polling applies to platforms BEFORE v11.0.0 only. From v11.0.0 the
+    # platform refuses an approval-requiring call on the planes this plugin
+    # drives (block_reason "approval_required: ... refused rather than held"),
+    # which is a plain deny: the flow below is never entered, whatever this is
+    # set to, and no HITL row is written.
+    #
+    # On a pre-v11 platform, HITL polling is ENABLED by default — the plugin
+    # runs the full 4-step approval flow:
     #
     #   1. pre_check / check_tool_input returns require_approval
     #   2. plugin calls axonflow.create_hitl_request(...) → approval_id
@@ -204,9 +313,19 @@ class AxonFlowPluginConfig:
     enable_hitl_polling: bool = True
     approval_poll_interval_seconds: float = 2.0
     approval_max_wait_seconds: float = 300.0
-    # Circuit breaker.
+    # Circuit breaker. Only a call that got NO ANSWER counts as a failure; an
+    # answer that did not allow means the platform is reachable, so it cannot
+    # open the breaker (an open breaker is itself a no-answer outcome).
     breaker_failure_threshold: int = 5
     breaker_recovery_seconds: float = 30.0
+    # What a governed call (pre_check, check_tool_input, check_tool_output)
+    # does when NO ANSWER arrives from AxonFlow: the connection failed, the call
+    # timed out, or the breaker is open. True, the default, lets the model or
+    # tool call proceed UNGOVERNED and logs a WARNING notice each time; False
+    # denies it. It never applies to an ANSWER that did not allow (a 401, a
+    # 429, a 5xx, an answer that cannot be read): those always deny. See
+    # `_classify_failure`.
+    fail_open: bool = True
     # Default request_type label propagated to AxonFlow's pre_check. Useful
     # for filtering decisions in the AxonFlow audit log.
     request_type: str = "adk-chat"
@@ -442,11 +561,21 @@ class AxonFlowPlugin(BasePlugin):
                 # do not need the SDK on the import path.
                 from axonflow import AxonFlow as AxonFlowClient
 
-                self._client = AxonFlowClient(
-                    endpoint=self._endpoint,
-                    client_id=self._client_id,
-                    client_secret=self._client_secret,
-                )
+                try:
+                    self._client = AxonFlowClient(
+                        endpoint=self._endpoint,
+                        client_id=self._client_id,
+                        client_secret=self._client_secret,
+                    )
+                except Exception as exc:  # noqa: BLE001 - the SDK's text can quote the secret
+                    # The SDK's validation error quotes the values it was given,
+                    # and a governed call puts a failure's text into the deny
+                    # reason and the log. Name the error class only.
+                    msg = (
+                        "the AxonFlow client could not be built from the plugin's endpoint, "
+                        f"client_id and client_secret ({type(exc).__name__})"
+                    )
+                    raise RuntimeError(msg) from None
             return self._client
 
     async def _call_with_guard(
@@ -454,7 +583,7 @@ class AxonFlowPlugin(BasePlugin):
         op_name: str,
         coro_factory: Any,
         *,
-        fail_open: bool = True,
+        governed: bool = False,
     ) -> Any:
         """Run `coro_factory()` with timeout + circuit breaker.
 
@@ -462,22 +591,36 @@ class AxonFlowPlugin(BasePlugin):
         without ever scheduling the underlying coroutine when the breaker
         is open (avoids the un-awaited-coroutine warning).
 
-        When `fail_open` is True (the default for audit-style hooks), any
-        failure or open-circuit returns None and the agent continues. When
-        `fail_open` is False (the approval path), the caller is responsible
-        for translating the None return into a deny short-circuit.
+        A GOVERNED call (`pre_check`, `check_tool_input`, `check_tool_output`)
+        returns its result or a `_GuardFailure` naming the failure's class,
+        and its hook turns a failure into a posture through `_failure_denial`:
+        a failure is never read as an allow. Any other call (the audits, the
+        HITL row create) returns None on failure: an audit carries on, and the
+        HITL caller denies.
+
+        Breaker accounting follows the class. A result, or an answer that did
+        not allow, is a success: the platform is reachable. Only a call that
+        got no answer is a failure, so a refusing platform can never open the
+        breaker and turn its refusals into no-answer outcomes. A call that
+        ended without an outcome (cancelled by its caller) counts neither way.
 
         the breaker probe slot MUST be released even
         when a caller cancels the awaiting task (`asyncio.CancelledError`
         is a `BaseException` subclass; it would otherwise leak the slot
         and permanently disable the breaker). We use try/finally with an
-        explicit `released` flag so success/failure attribution is
+        explicit `outcome` flag so success/failure attribution is
         preserved AND the slot is freed on any exit path.
         """
         if not await self._breaker.acquire():
+            if governed:
+                return _GuardFailure(
+                    _FailureClass.UNREACHABLE,
+                    "circuit breaker open after repeated connection failures",
+                )
             logger.debug("axonflow.%s skipped: circuit open", op_name)
             return None
-        outcome: str = "failure"  # default if we exit via cancel/BaseException
+        # "cancelled" stays only if we leave through a BaseException.
+        outcome: str = "cancelled"
         try:
             try:
                 result = await asyncio.wait_for(
@@ -487,31 +630,75 @@ class AxonFlowPlugin(BasePlugin):
                 outcome = "success"
                 return result
             except asyncio.TimeoutError:
-                logger.warning(
-                    "axonflow.%s timed out after %.1fs; %s",
-                    op_name,
-                    self._config.call_timeout_seconds,
-                    "failing open" if fail_open else "deferring to caller",
+                failure = _GuardFailure(
+                    _FailureClass.UNREACHABLE,
+                    f"timed out after {self._config.call_timeout_seconds:.1f}s",
                 )
-                return None
             except Exception as exc:  # noqa: BLE001 - intentional broad catch at the boundary
-                logger.warning(
-                    "axonflow.%s failed: %s; %s",
-                    op_name,
-                    exc,
-                    "failing open" if fail_open else "deferring to caller",
-                )
-                return None
+                failure = _GuardFailure(_classify_failure(exc), self._failure_detail(exc))
+            outcome = "success" if failure.failure_class is _FailureClass.NOT_ALLOWED else "failure"
+            if governed:
+                return failure
+            logger.warning(
+                "axonflow.%s failed (%s): %s",
+                op_name,
+                failure.failure_class.value,
+                failure.detail,
+            )
+            return None
         finally:
-            # Always release the breaker slot. `outcome` reflects whether
-            # this counts as a success (resets counter) or a failure
-            # (increments counter, may trip OPEN). On cancellation/
-            # BaseException, we treat as failure — defensive, and
-            # the cancel re-raises through this finally anyway.
+            # Always release the breaker slot. "success" resets the counter,
+            # "failure" increments it (and may trip OPEN), and a cancellation
+            # only frees the slot: it says nothing about whether AxonFlow
+            # answers, and the cancel re-raises through this finally anyway.
             if outcome == "success":
                 await self._breaker.record_success()
-            else:
+            elif outcome == "failure":
                 await self._breaker.record_failure()
+            else:
+                await self._breaker.release()
+
+    def _failure_denial(self, op_name: str, failure: _GuardFailure) -> str | None:
+        """The posture for a governed call that produced no result.
+
+        Returns the deny reason the hook shows, or None when the call proceeds
+        ungoverned. NOT_ALLOWED always denies. UNREACHABLE follows
+        `config.fail_open`, and proceeding is never silent: it logs a WARNING
+        notice naming the call and the cause, every time.
+        """
+        if failure.failure_class is _FailureClass.NOT_ALLOWED:
+            logger.warning(
+                "AxonFlow %s did not complete with an allow (%s); denying",
+                op_name,
+                failure.detail,
+            )
+            return f"{op_name} did not complete with an allow: {failure.detail}"
+        if self._config.fail_open:
+            logger.warning(
+                "AxonFlow %s got no answer (%s); the call proceeds UNGOVERNED because fail_open is True",
+                op_name,
+                failure.detail,
+            )
+            return None
+        logger.warning(
+            "AxonFlow %s got no answer (%s); denying because fail_open is False",
+            op_name,
+            failure.detail,
+        )
+        return f"{op_name} got no answer from AxonFlow ({failure.detail}), and fail_open is False"
+
+    @staticmethod
+    def _failure_detail(exc: BaseException) -> str:
+        """The exception's class and text, bounded: what a deny or notice shows.
+
+        The class name is kept because the text alone can be opaque (a non-JSON
+        answer reads "Expecting value: line 1 column 1 (char 0)").
+        """
+        text = str(exc).strip()
+        detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+        if len(detail) > _FAILURE_DETAIL_MAX_CHARS:
+            detail = detail[: _FAILURE_DETAIL_MAX_CHARS - 3] + "..."
+        return detail
 
     def _effective_client_id(self) -> str:
         """Resolve the AxonFlow `client_id` for HITL row creation.
@@ -541,10 +728,9 @@ class AxonFlowPlugin(BasePlugin):
         We do NOT fall back to `ctx.user_id`. In enterprise
         mode the platform's apiAuthMiddleware expects a JWT signed with
         the tenant key, and ADK's `user_id` is a raw identifier string
-        (e.g. "cust-001"). Falling back to it would 401 every call,
-        which `_call_with_guard` would silently fail-open — disabling
-        governance across the entire deployment. Host apps MUST set
-        `state["axonflow_user_token"] = <jwt>` for enterprise mode.
+        (e.g. "cust-001"). Falling back to it would 401 every call, and
+        a 401 denies every governed model and tool call. Host apps MUST
+        set `state["axonflow_user_token"] = <jwt>` for enterprise mode.
         """
         state_token: Any = None
         state = getattr(ctx, "state", None)
@@ -608,13 +794,16 @@ class AxonFlowPlugin(BasePlugin):
 
     @staticmethod
     def _is_approval_required_block_reason(block_reason: str | None) -> bool:
-        """Exact-match check against the platform's `require_approval` sentinel.
+        """Exact-match check against the pre-v11 `require_approval` sentinel.
 
-        Substring matching previously false-positived on any policy whose
-        reason mentioned the word "approval". The platform sets
-        `BlockReason = "require_approval"` verbatim at the pre-check and
-        proxy-mode gates. Matching the exact sentinel is wire-stable and
-        unambiguous.
+        Platforms before v11.0.0 set `BlockReason = "require_approval"`
+        verbatim at the pre-check and proxy-mode gates, and only that answer
+        enters the HITL hold. From v11.0.0 the platform never holds on these
+        planes: it refuses with a `block_reason` beginning `approval_required:`
+        ("... refused rather than held (PRD v11 §1.13)"), which does not match
+        and is a plain deny carrying that text. Substring matching previously
+        false-positived on any policy whose reason mentioned the word
+        "approval", so the match stays exact.
         """
         return block_reason == "require_approval"
 
@@ -671,9 +860,7 @@ class AxonFlowPlugin(BasePlugin):
             client = await self._get_client()
             return await client.create_hitl_request(request=create_input)
 
-        created = await self._call_with_guard(
-            "create_hitl_request", _do_create, fail_open=False
-        )
+        created = await self._call_with_guard("create_hitl_request", _do_create)
         if created is None:
             return None
         rid = getattr(created, "request_id", None)
@@ -817,11 +1004,11 @@ class AxonFlowPlugin(BasePlugin):
         result = await self._call_with_guard(
             "pre_check",
             _do_pre_check,
-            fail_open=True,
+            governed=True,
         )
-        if result is None:
-            # Fail-open: AxonFlow unreachable or timed out.
-            return None
+        if isinstance(result, _GuardFailure):
+            denial = self._failure_denial("pre_check", result)
+            return None if denial is None else self._deny_llm_response(denial)
         if getattr(result, "approved", False):
             # Stash context_id so the after_model audit can link to the
             # pre-check decision in AxonFlow's audit log.
@@ -916,7 +1103,7 @@ class AxonFlowPlugin(BasePlugin):
             )
 
         # Audit failures must never break the agent.
-        await self._call_with_guard("audit_llm_call", _do_audit, fail_open=True)
+        await self._call_with_guard("audit_llm_call", _do_audit)
         return None
 
     @staticmethod
@@ -995,10 +1182,11 @@ class AxonFlowPlugin(BasePlugin):
         result = await self._call_with_guard(
             "check_tool_input",
             _do_check,
-            fail_open=True,
+            governed=True,
         )
-        if result is None:
-            return None
+        if isinstance(result, _GuardFailure):
+            denial = self._failure_denial("check_tool_input", result)
+            return None if denial is None else {"error": f"[AxonFlow] {denial}"}
         if getattr(result, "allowed", False):
             self._set_state(
                 tool_context,
@@ -1092,10 +1280,14 @@ class AxonFlowPlugin(BasePlugin):
         check = await self._call_with_guard(
             "check_tool_output",
             _do_check,
-            fail_open=True,
+            governed=True,
         )
-        if check is None:
-            return None
+        if isinstance(check, _GuardFailure):
+            # The tool result is withheld unless no answer arrived and
+            # fail_open lets it through: the model must not receive output the
+            # platform refused to check.
+            denial = self._failure_denial("check_tool_output", check)
+            return None if denial is None else {"error": f"[AxonFlow] {denial}"}
         allowed = bool(getattr(check, "allowed", False))
         # The platform's masked tool output, whether the answer allowed or
         # blocked: check-output fills `redacted_data` (older builds
@@ -1147,7 +1339,7 @@ class AxonFlowPlugin(BasePlugin):
                     client = await self._get_client()
                     return await client.audit_tool_call(request=audit_request)
 
-                await self._call_with_guard("audit_tool_call", _do_success_audit, fail_open=True)
+                await self._call_with_guard("audit_tool_call", _do_success_audit)
             if masked is None:
                 return None
             return self._redacted_result(masked)
@@ -1271,7 +1463,7 @@ class AxonFlowPlugin(BasePlugin):
             client = await self._get_client()
             return await client.audit_tool_call(request=request)
 
-        await self._call_with_guard("audit_tool_call", _do_audit, fail_open=True)
+        await self._call_with_guard("audit_tool_call", _do_audit)
         return None
 
     @staticmethod

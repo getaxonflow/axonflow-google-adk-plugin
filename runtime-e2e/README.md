@@ -23,8 +23,9 @@ cd runtime-e2e
 This will:
 1. Bring up Postgres + Redis + AxonFlow Agent via docker-compose
 2. Install the plugin from the local checkout
-3. Run all eleven test scenarios
-4. Print a PASS/FAIL/SKIP summary
+3. Run every suite in `run-all.sh`'s `ALL_TESTS` (twelve); a listed suite
+   whose directory or `test.sh` is missing fails the run
+4. Print a PASS/FAIL/SKIP summary (SKIP only for a suite not selected)
 5. Tear down the stack
 
 To leave the stack running for debugging:
@@ -39,6 +40,8 @@ To run specific tests:
 TESTS="agent-runs-with-plugin-registered audit-recorded-on-tool-success" ./run-all.sh
 ```
 
+To print the suite list: `./run-all.sh --list`.
+
 ## Test scenarios
 
 | Directory | What it tests |
@@ -46,14 +49,20 @@ TESTS="agent-runs-with-plugin-registered audit-recorded-on-tool-success" ./run-a
 | `agent-runs-with-plugin-registered/` | Plugin registers on Runner, pre_check fires, agent completes |
 | `policy-deny-blocks-tool-call/` | Deny policy blocks tool execution |
 | `audit-recorded-on-tool-success/` | Successful tool calls emit audit_tool_call(success=True) |
-| `require-approval-creates-hitl-row-and-polls/` | HITL code path fires through Runner (fail-closed on community 404) |
+| `hitl-polling-on-allowed-call-writes-no-hitl-row/` | With HITL polling on, a v11 platform's allowed call runs, the hold is never entered, and no HITL row is written (was `require-approval-creates-hitl-row-and-polls`) |
 | `mcp-toolset-loads-axonflow-tools/` | axonflow_mcp_toolset() integrates into Runner.run_async |
 | `agent-tool-bypass-gotcha-pinned/` | AgentTool sub-agent governance through plugin propagation |
 | `on-tool-error-callback-fires/` | Tool error triggers on_tool_error_callback audit |
 | `sequential-runs-breaker-stable/` | 5 sequential runs, circuit breaker stays closed |
-| `breaker-opens-on-stack-down/` | Fail-open behavior when AxonFlow is unreachable |
+| `breaker-opens-on-stack-down/` | No answer: with `fail_open=True` the agent completes ungoverned with a WARNING notice per governed call, and the breaker opens; with `fail_open=False` the same outage denies |
 | `on-user-message-callback-fires/` | Multi-turn conversation, no-op callback does not interfere |
 | `tool-result-redaction/` | A tool result reaches the model with the platform's redaction applied; the audit `user_id` is never the user token |
+| `platform-error-posture/` | **Stub channel** (a local HTTP server, not the stack): a 401, a 429, a 5xx, a non-JSON answer and an `approval_required` refusal each deny the governed call; no answer and a timeout follow `fail_open`; a refusal never opens the breaker |
+
+`platform-error-posture/` does not use the stack: the stack cannot be made to
+answer a 401 (a community agent accepts any credential), a 429 or a 5xx on
+demand, so those answers come from a stub server in front of the real SDK and
+plugin.
 
 ## AxonFlow agent image
 
@@ -82,4 +91,7 @@ keys are needed.
 ## CI integration
 
 The release workflow gates PyPI publish on these tests passing. See
-`.github/workflows/release.yml` for the `runtime-e2e` job configuration.
+`.github/workflows/release.yml` for the `runtime-e2e` job configuration. It
+runs the suites `_lib/check-suite-list.sh` prints, and that script fails when
+`run-all.sh`'s `ALL_TESTS` and the suite directories differ, so a suite can
+neither be added without running nor silently dropped.

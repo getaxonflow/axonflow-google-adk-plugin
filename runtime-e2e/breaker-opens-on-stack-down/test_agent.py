@@ -1,18 +1,23 @@
 # Copyright 2026 AxonFlow
 # SPDX-License-Identifier: MIT
 
-"""Verify fail-open behavior when the AxonFlow stack is unreachable.
+"""Verify the no-answer posture when the AxonFlow stack is unreachable.
 
 Points the plugin at a non-existent endpoint (port 19999) and runs the
-agent through Runner.run_async. The plugin should fail-open on every
-hook (pre_check, check_tool_input, check_tool_output) and the agent
-should complete normally. After enough failures, the circuit breaker
-should open.
+agent through Runner.run_async. No answer arrives, so with the default
+`fail_open=True` every governed hook (pre_check, check_tool_input,
+check_tool_output) lets the call proceed UNGOVERNED and says so in a
+WARNING notice, and the agent completes normally. After enough connection
+failures the circuit breaker opens.
 
 This test verifies:
   1. Agent completes despite AxonFlow being unreachable.
-  2. Tool executes (plugin fails-open, does not block).
-  3. Circuit breaker opens after threshold failures.
+  2. Tool executes (fail_open=True proceeds on no answer).
+  3. Circuit breaker opens after threshold connection failures.
+  4. Every governed hook logged a WARNING notice that it ran ungoverned,
+     including a call the open breaker skipped.
+  5. With fail_open=False the same outage denies: the tool does not run,
+     and the model call is denied with the no-answer reason.
 """
 
 from __future__ import annotations
@@ -29,9 +34,13 @@ from google.genai import types as genai_types
 
 from axonflow_adk import AxonFlowPlugin
 from axonflow_adk.plugin import AxonFlowPluginConfig, _BreakerState
+from _lib.notices import capture_plugin_log
 from _lib.stub_model import StubModel
 
 TOOL_EXECUTED = False
+
+# The plugin's WARNING records: the notices a user sees.
+NOTICES = capture_plugin_log()
 
 
 def get_balance(account_id: str) -> dict:
@@ -115,21 +124,65 @@ async def main() -> int:
 
         print(f"  run {run_idx}/{num_runs}: OK — tool executed, agent completed ({len(events)} events)")
 
-    # After 3 runs with multiple failures per run, the breaker should be open.
+    # After 3 runs of connection failures the breaker must be open: only a
+    # call that got no answer counts toward it, and every call here got none.
     breaker_state = plugin._breaker.state
     consecutive = plugin._breaker.consecutive_failures
     print(f"  breaker state: {breaker_state.value} (consecutive failures: {consecutive})")
+    if breaker_state is not _BreakerState.OPEN:
+        print(f"FAIL: breaker is {breaker_state.value} after {consecutive} connection failures (expected open)")
+        return 1
+    print("  breaker correctly opened after threshold failures")
 
-    if breaker_state is _BreakerState.OPEN:
-        print("  breaker correctly opened after threshold failures")
-    elif breaker_state is _BreakerState.CLOSED and consecutive == 0:
-        # Possible if the breaker resets on some path — still acceptable
-        # as long as the agent completed.
-        print("  breaker stayed closed (may have recovered; agent completed)")
-    else:
-        print(f"  breaker in unexpected state: {breaker_state.value}")
-
+    # Proceeding ungoverned is never silent: every governed hook logged a
+    # WARNING notice naming itself, including the calls the open breaker
+    # skipped.
+    for op in ("pre_check", "check_tool_input", "check_tool_output"):
+        if not any(f"AxonFlow {op} got no answer" in m and "UNGOVERNED" in m for m in NOTICES.messages):
+            print(f"FAIL: no WARNING notice that {op} ran UNGOVERNED: {NOTICES.messages}")
+            return 1
+    if not any("circuit breaker open after repeated connection failures" in m for m in NOTICES.messages):
+        print(f"FAIL: no WARNING notice for a call skipped by the open breaker: {NOTICES.messages}")
+        return 1
+    print(f"  {len(NOTICES.messages)} WARNING notice(s) logged, one per ungoverned call")
     await plugin.aclose()
+
+    # The switch: the same outage with fail_open=False denies instead.
+    TOOL_EXECUTED = False
+    closed_plugin = AxonFlowPlugin(
+        endpoint=unreachable_endpoint,
+        client_id="e2e-test",
+        client_secret="",
+        config=AxonFlowPluginConfig(
+            call_timeout_seconds=2.0,
+            default_user_token="e2e-user",
+            enable_hitl_polling=False,
+            breaker_failure_threshold=3,
+            breaker_recovery_seconds=60.0,
+            fail_open=False,
+        ),
+    )
+    closed_runner = InMemoryRunner(agent=agent, app_name="e2e_breaker_test", plugins=[closed_plugin])
+    model._call_count = 0
+    session = await closed_runner.session_service.create_session(app_name="e2e_breaker_test", user_id="e2e-user")
+    texts: list[str] = []
+    async for event in closed_runner.run_async(
+        user_id="e2e-user",
+        session_id=session.id,
+        new_message=genai_types.Content(role="user", parts=[genai_types.Part(text="Check balance (fail_open=False)")]),
+    ):
+        for part in getattr(getattr(event, "content", None), "parts", None) or []:
+            if getattr(part, "text", None):
+                texts.append(part.text)
+    await closed_plugin.aclose()
+    if TOOL_EXECUTED:
+        print("FAIL: fail_open=False still executed the tool with AxonFlow down")
+        return 1
+    if not any(t.startswith("[AxonFlow policy denial] pre_check got no answer from AxonFlow (") for t in texts):
+        print(f"FAIL: fail_open=False did not deny the model call with the no-answer reason: {texts}")
+        return 1
+    print("  fail_open=False: tool not executed, model call denied with the no-answer reason")
+
     print("PASS: breaker-opens-on-stack-down")
     return 0
 

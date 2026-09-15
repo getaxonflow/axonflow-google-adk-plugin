@@ -95,10 +95,35 @@ async def test_before_model_deny_returns_short_circuit_llm_response(
     assert all(c[0] != "get_hitl_request" for c in fake_client.calls)
 
 
-async def test_before_model_axonflow_unreachable_fails_open(
+async def test_before_model_axonflow_unreachable_fails_open_with_a_notice(
+    fake_client, callback_context, llm_request_with_text, caplog
+):
+    """No answer (the SDK's connection failure) with the default fail_open →
+    the LLM call proceeds, and a WARNING notice says it ran ungoverned."""
+    from axonflow.exceptions import ConnectionError as SdkConnectionError
+
+    fake_client.raise_on_pre_check = SdkConnectionError("Failed to connect to AxonFlow Agent: connection refused")
+    plugin = _new_plugin(fake_client)
+    caplog.set_level("WARNING", logger="axonflow_adk.plugin")
+
+    result = await plugin.before_model_callback(
+        callback_context=callback_context,
+        llm_request=llm_request_with_text,
+    )
+
+    assert result is None, "AxonFlow outage MUST NOT take down the agent"
+    assert any(
+        "AxonFlow pre_check got no answer" in r.getMessage() and "UNGOVERNED" in r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    ), "proceeding ungoverned MUST log a WARNING notice"
+
+
+async def test_before_model_failure_that_is_not_a_connection_failure_denies(
     fake_client, callback_context, llm_request_with_text
 ):
-    """AxonFlow exception → fail open (return None, let LLM call proceed)."""
+    """A failure that is not a connection failure is not an allow: the model
+    call is denied, even though the message mentions a refused connection."""
     fake_client.raise_on_pre_check = RuntimeError("axonflow agent connection refused")
     plugin = _new_plugin(fake_client)
 
@@ -107,7 +132,9 @@ async def test_before_model_axonflow_unreachable_fails_open(
         llm_request=llm_request_with_text,
     )
 
-    assert result is None, "AxonFlow outage MUST NOT take down the agent"
+    assert result is not None, "a failure that is not a connection failure MUST deny"
+    text = result.content.parts[0].text
+    assert text.startswith("[AxonFlow policy denial] pre_check did not complete with an allow: RuntimeError: "), text
 
 
 async def test_before_model_axonflow_timeout_fails_open(
@@ -367,8 +394,10 @@ async def test_after_tool_hard_deny_returns_error(fake_client, tool_context, fak
 async def test_circuit_breaker_opens_after_threshold(
     fake_client, callback_context, llm_request_with_text
 ):
-    """N consecutive failures → breaker opens → subsequent hooks skip AxonFlow."""
-    fake_client.raise_on_pre_check = RuntimeError("axonflow down")
+    """N consecutive connection failures → breaker opens → subsequent hooks skip AxonFlow."""
+    from axonflow.exceptions import ConnectionError as SdkConnectionError
+
+    fake_client.raise_on_pre_check = SdkConnectionError("axonflow down")
     plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
 
     # 3 consecutive failures
@@ -394,7 +423,9 @@ async def test_circuit_breaker_recovers_after_window(
     fake_client, callback_context, llm_request_with_text
 ):
     """Open breaker → wait recovery_seconds → next call is a probe (half-open)."""
-    fake_client.raise_on_pre_check = RuntimeError("transient")
+    from axonflow.exceptions import TimeoutError as SdkTimeoutError
+
+    fake_client.raise_on_pre_check = SdkTimeoutError("transient")
     plugin = _new_plugin(
         fake_client,
         breaker_failure_threshold=2,
@@ -420,6 +451,73 @@ async def test_circuit_breaker_recovers_after_window(
     )
     assert result is None
     assert plugin._breaker.state is _BreakerState.CLOSED
+
+
+async def test_a_refusal_never_opens_the_breaker(fake_client, tool_context, fake_tool):
+    """Five answered refusals against a breaker that opens after three
+    failures: every call is denied, the breaker stays CLOSED, and the sixth
+    call still reaches the platform and is still denied. An open breaker is a
+    no-answer outcome, so a refusal that opened it would turn refusals into
+    allow-with-notice."""
+    from axonflow.exceptions import ConnectorError
+
+    fake_client.raise_on_check_tool_input = ConnectorError("Invalid credentials", "adk-tool", "check-input")
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
+
+    for attempt in range(1, 7):
+        result = await plugin.before_tool_callback(tool=fake_tool, tool_args={"a": 1}, tool_context=tool_context)
+        assert isinstance(result, dict) and "Invalid credentials" in result["error"], f"refusal {attempt} was not denied: {result!r}"
+        assert plugin._breaker.state is _BreakerState.CLOSED, f"the breaker opened after refusal {attempt}"
+    assert sum(1 for c in fake_client.calls if c[0] == "check_tool_input") == 6
+
+
+async def test_cancelled_calls_count_neither_way(fake_client, callback_context, llm_request_with_text):
+    """Calls cancelled by their caller (ADK cancels sibling tool calls when one
+    raises) say nothing about whether AxonFlow answers. They must not count as
+    connection failures, or enough of them would open the breaker; and they
+    must not count as successes, or they would reset real failures. The
+    breaker starts with two failures already counted, so either miscount moves
+    the count."""
+    fake_client.pre_check_delay_seconds = 1.0
+    fake_client.pre_check_result = types.SimpleNamespace(approved=True, context_id="ctx", block_reason=None)
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3)
+    plugin._breaker.consecutive_failures = 2
+
+    tasks = [
+        asyncio.ensure_future(plugin.before_model_callback(callback_context=callback_context, llm_request=llm_request_with_text))
+        for _ in range(5)
+    ]
+    await asyncio.sleep(0.05)
+    for task in tasks:
+        task.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert all(isinstance(r, asyncio.CancelledError) for r in results), results
+    assert plugin._breaker.state is _BreakerState.CLOSED, "cancellations opened the breaker"
+    assert plugin._breaker.consecutive_failures == 2, "a cancellation was counted as a success or a failure"
+
+
+async def test_a_cancelled_half_open_probe_frees_the_slot_and_keeps_the_state(fake_client, callback_context, llm_request_with_text):
+    """A HALF_OPEN probe cancelled mid-call frees the probe slot and leaves the
+    breaker HALF_OPEN with its failure count: a cancellation neither closes the
+    breaker (a success) nor re-opens it (a failure)."""
+    fake_client.pre_check_delay_seconds = 1.0
+    fake_client.pre_check_result = types.SimpleNamespace(approved=True, context_id="ctx", block_reason=None)
+    plugin = _new_plugin(fake_client, breaker_failure_threshold=3, breaker_recovery_seconds=0.01)
+    plugin._breaker.consecutive_failures = 3
+    plugin._breaker.state = _BreakerState.OPEN
+    plugin._breaker.opened_at = 0.0  # the recovery window has long passed
+
+    probe = asyncio.ensure_future(plugin.before_model_callback(callback_context=callback_context, llm_request=llm_request_with_text))
+    await asyncio.sleep(0.05)
+    assert plugin._breaker.state is _BreakerState.HALF_OPEN and plugin._breaker._probe_in_flight is True
+    probe.cancel()
+    result = await asyncio.gather(probe, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError), result
+    assert plugin._breaker._probe_in_flight is False, "the cancelled probe leaked its slot"
+    assert plugin._breaker.state is _BreakerState.HALF_OPEN, f"a cancelled probe moved the breaker to {plugin._breaker.state.value}"
+    assert plugin._breaker.consecutive_failures == 3
 
 
 # ---------------------------------------------------------------------------

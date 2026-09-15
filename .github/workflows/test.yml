@@ -53,11 +53,14 @@ jobs:
         run: pytest tests/ -v --tb=short
 
   sdk-wire-contract:
-    # Proves the caller_name dual-send actually reaches the audit wire body,
-    # against the REAL axonflow SDK serializer (tests/ stubs the SDK type).
-    # caller_name is unreleased on PyPI, so install the caller_name-capable
-    # SDK from a pinned git build; swap for the PyPI release (and bump the
-    # `axonflow` runtime pin) once that SDK ships. Nothing here skips.
+    # Proves the plugin against the REAL axonflow SDK (tests/ stubs it): the
+    # caller_name dual-send reaches the audit wire body, and the failure
+    # posture reads the exceptions the SDK actually raises for each platform
+    # answer, with a local stub server as the platform. The SDK is the one the
+    # plugin's own dependency (axonflow>=9.3.0) resolves, which is what a user
+    # installs. This job used to force-install a git build (5d1809e, which
+    # reports 8.5.1) that predates the per-call extra_headers the plugin
+    # passes, so no governed check could run on it. Nothing here skips.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,13 +70,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install plugin + caller_name-capable SDK (pinned git build)
+      - name: Install plugin + the SDK its dependency resolves
         run: |
           pip install -e ".[dev]"
-          pip install --force-reinstall --no-deps \
-            "axonflow @ git+https://github.com/getaxonflow/axonflow-sdk-python.git@5d1809e"
+          python -c 'from importlib.metadata import version as v; print("axonflow", v("axonflow"))'
 
-      - name: Verify caller_name reaches the audit wire body
+      - name: Verify the plugin against the real SDK
         run: pytest tests-sdk-wire/ -v --tb=short
 
   build-check:
