@@ -6,8 +6,9 @@
 # entry point with AxonFlowPlugin + enable_hitl_polling=True configured.
 #
 # It no longer writes a require_approval row into static_policies: since
-# AxonFlow v11.0.0 a row written there authors no verdict, and no control the
-# platform ships requires approval. The tool call is allowed, and the test
+# AxonFlow v11.0.0 a row written there authors no verdict, and none of the
+# platform's shipped controls gives an approval verdict for this tool call. The
+# tool call is allowed, and the test
 # proves the hook chain with HITL polling on and the audit row it leaves.
 set -euo pipefail
 

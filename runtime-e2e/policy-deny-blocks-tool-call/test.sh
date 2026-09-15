@@ -39,7 +39,8 @@ if ! grep -qi '\[AxonFlow\]' /tmp/policy-deny-output.log && ! grep -qi 'denied' 
 fi
 echo "  denial signal found in output"
 
-# ASSERT: query audit_logs for a denied decision
+# ASSERT: the tool call reached the platform and left an adk-tool row in
+# mcp_query_audits (the hooks fired; any adk-tool row satisfies it)
 "$LIB_DIR/verify-db.sh" mcp-audit-exists "adk-tool"
 
 echo "PASS: policy-deny-blocks-tool-call"
