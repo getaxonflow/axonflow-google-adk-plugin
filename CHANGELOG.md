@@ -8,14 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A governed call that the platform does not allow is now denied, and a call that gets no answer is never silent.** Every failed governed call used to fail open: with the platform answering `401`, `429` or `5xx`, the tool call ran anyway. One table now decides what a failed `pre_check`, `check_tool_input` or `check_tool_output` does. A policy deny denies with its reason, and a tool result is withheld or replaced by the platform's masked content. An answer that does not allow - `401`, `429`, `5xx`, an unreadable body, or any failure that is not a connection failure - denies the model call, denies the tool call and withholds the tool result, and `fail_open` never applies to it.
-- **An ambiguous answer is a refusal, not an allow.** An answer the server cut off by closing the connection, a connection closed after the request without an answer, and a proxy's refusal are each treated as a refusal rather than as a missing answer.
+- **A governed call the platform answers without allowing is now denied.** Every failed governed call used to fail open: with the platform answering `401`, `429` or `5xx`, the tool call ran anyway. One table now classifies every failure of a `pre_check`, `check_tool_input` or `check_tool_output`, and the three outcomes are distinct:
+  - **A policy deny** denies the model call and the tool call with the platform's reason, and withholds the tool result or replaces it with the platform's masked content.
+  - **An answer that does not allow** - `401`, `429`, `5xx`, a body that cannot be read, and any failure that is not one of the no-answer failures below - **denies**, and `fail_open` does not apply to it.
+  - **No answer at all** - a connect or read timeout, a network or connection error, a write error, and an open circuit breaker - follows `fail_open`.
+- **An ambiguous answer is a refusal, not a missing answer.** An answer the server cut off by closing the connection (`httpx.RemoteProtocolError`) and a proxy's refusal (`httpx.ProxyError`) are neither timeouts nor network errors, so they are classified as "answered without allowing" and denied rather than handed to `fail_open`.
+- **The SDK's own constructor error no longer reaches a deny reason or a log.** It quoted the endpoint, the client id and the client secret; only the exception's class name survives now.
 
 ### Added
 
-- **A `fail_open` configuration option**, which applies only where the platform could not be reached at all. It cannot reopen any of the cases above.
+- **A `fail_open` configuration option** (default `True`), which governs exactly one class: the call where the platform gave **no answer**. It cannot reopen a policy deny, and it cannot reopen an answer that did not allow.
 
-Requires an AxonFlow platform on v11.1.0 or later for the release's approval and redaction contracts; the plugin keeps working against v11.0.0.
+### Changed
+
+- **Circuit-breaker accounting** counts only the failures that represent an unreachable platform, so a platform that answers - even with a refusal - does not trip the breaker.
+
+### Compatibility
+
+An approval-requiring call is **refused, not held**, on every platform from v11.0.0: the platform answers a `block_reason` beginning `approval_required:` on the planes this plugin drives, and no approval-queue row is written. `enable_hitl_polling` and the four-step approval flow apply only to platforms **before** v11.0.0, which answered the `require_approval` sentinel. Nothing in this release changes the SDK floor.
 
 ## [1.3.1] - 2026-09-15: the release suite runs on AxonFlow v11.0.0
 
