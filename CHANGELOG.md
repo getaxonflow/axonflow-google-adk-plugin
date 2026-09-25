@@ -4,6 +4,19 @@ All notable changes to the AxonFlow Google ADK Plugin will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-26: a platform answer that does not allow denies the call
+
+### Fixed
+
+- **A governed call that the platform does not allow is now denied, and a call that gets no answer is never silent.** Every failed governed call used to fail open: with the platform answering `401`, `429` or `5xx`, the tool call ran anyway. One table now decides what a failed `pre_check`, `check_tool_input` or `check_tool_output` does. A policy deny denies with its reason, and a tool result is withheld or replaced by the platform's masked content. An answer that does not allow - `401`, `429`, `5xx`, an unreadable body, or any failure that is not a connection failure - denies the model call, denies the tool call and withholds the tool result, and `fail_open` never applies to it.
+- **An ambiguous answer is a refusal, not an allow.** An answer the server cut off by closing the connection, a connection closed after the request without an answer, and a proxy's refusal are each treated as a refusal rather than as a missing answer.
+
+### Added
+
+- **A `fail_open` configuration option**, which applies only where the platform could not be reached at all. It cannot reopen any of the cases above.
+
+Requires an AxonFlow platform on v11.1.0 or later for the release's approval and redaction contracts; the plugin keeps working against v11.0.0.
+
 ## [1.3.1] - 2026-09-15: the release suite runs on AxonFlow v11.0.0
 
 ### Fixed
