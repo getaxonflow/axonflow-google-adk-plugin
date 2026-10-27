@@ -430,6 +430,7 @@ async def test_a_remote_error_cannot_reflect_credentials_or_control_characters(
             "client_secret=wire-secret opaque=wire-secret "
             f'"user_token":"{dynamic_token}" '
             f"{{'access_token': '{remote_access_token}'}} "
+            '"refresh_token":"unterminated-refresh-token-wire-77d1 '
             "private_key=-----BEGIN PRIVATE KEY----- key-body -----END PRIVATE KEY----- "
             "safe\u202eFORGED"
         )
@@ -446,6 +447,7 @@ async def test_a_remote_error_cannot_reflect_credentials_or_control_characters(
         "wire-secret",
         dynamic_token,
         remote_access_token,
+        "unterminated-refresh-token-wire-77d1",
         "eyJhbGciOiJIUzI1NiJ9",
         "key-body",
         "\u202e",

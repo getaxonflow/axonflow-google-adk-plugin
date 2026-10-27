@@ -197,16 +197,19 @@ _AUTH_SCHEME_RE = re.compile(
     r"(?i)\b(Bearer|Basic)\s+(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]\"']+)"
 )
 _CREDENTIAL_FIELD_RE = re.compile(
-    r"(?i)(?P<quote>[\"']?)\b"
+    r"(?i)(?P<quote>[\"'`]?)\b"
     r"(?P<label>authorization|proxy[_-]?authorization|x[_-]?api[_-]?key|"
     r"api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
     r"id[_-]?token|bearer[_-]?token|user[_-]?token|session[_-]?token|"
     r"private[_-]?key|password|passwd|secret)"
-    r"\b(?P=quote)\s*[:=]\s*"
+    # Treat closing key quotes independently: diagnostics are not guaranteed
+    # to contain valid JSON, and a truncated/mismatched quote must not turn
+    # redaction off.
+    r"\b[\"'`]?\s*[:=]\s*"
     # An unquoted credential is conservatively consumed to a structural
     # delimiter rather than the next space. That also covers PEM values and
     # YAML-style block values after whitespace has been normalized.
-    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^,;}\]\"']+)"
+    r"(?:\"(?:\\.|[^\"\\])*\"?|'(?:\\.|[^'\\])*'?|[^,;}\]\"']+)"
 )
 
 

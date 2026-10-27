@@ -153,6 +153,7 @@ async def test_remote_failure_detail_redacts_credentials_and_log_controls(
         f"client_secret={secret} opaque={secret} "
         f"\"user_token\":\"{dynamic_token}\" "
         f"{{'access_token': '{remote_access_token}'}} "
+        '"refresh_token":"unterminated-refresh-token-77d1 '
         "private_key=-----BEGIN PRIVATE KEY----- key-body -----END PRIVATE KEY----- "
         "safe\u202eFORGED",
         "adk-tool",
@@ -174,6 +175,7 @@ async def test_remote_failure_detail_redacts_credentials_and_log_controls(
         secret,
         dynamic_token,
         remote_access_token,
+        "unterminated-refresh-token-77d1",
         "eyJhbGciOiJIUzI1NiJ9",
         "key-body",
         "\u202e",
