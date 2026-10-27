@@ -137,6 +137,67 @@ async def test_before_model_failure_that_is_not_a_connection_failure_denies(
     assert text.startswith("[AxonFlow policy denial] pre_check did not complete with an allow: RuntimeError: "), text
 
 
+async def test_remote_failure_detail_redacts_credentials_and_log_controls(
+    fake_client, tool_context, fake_tool, caplog
+):
+    """A proxy/platform error body is remote-controlled. Credential-shaped
+    values and configured secrets must not reach the model transcript or log,
+    and control characters must not create forged log lines."""
+    from axonflow.exceptions import ConnectorError
+
+    secret = "SUPERSECRET-reflected-7c1d"
+    dynamic_token = "dynamic-user-token-92ad"
+    remote_access_token = "remote-access-token-44f1"
+    fake_client.raise_on_check_tool_input = ConnectorError(
+        f"upstream\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature "
+        f"client_secret={secret} opaque={secret} "
+        f"\"user_token\":\"{dynamic_token}\" "
+        f"{{'access_token': '{remote_access_token}'}} "
+        '"refresh_token":"unterminated-refresh-token-77d1 '
+        "private_key=-----BEGIN PRIVATE KEY----- key-body -----END PRIVATE KEY----- "
+        "safe\u202eFORGED",
+        "adk-tool",
+        "check-input",
+    )
+    plugin = _new_plugin(fake_client)
+    plugin._client_secret = secret
+    caplog.set_level("WARNING", logger="axonflow_adk.plugin")
+
+    result = await plugin.before_tool_callback(
+        tool=fake_tool,
+        tool_args={"amount": 1},
+        tool_context=tool_context,
+    )
+
+    assert isinstance(result, dict)
+    assert "[REDACTED]" in result["error"], result
+    sentinels = (
+        secret,
+        dynamic_token,
+        remote_access_token,
+        "unterminated-refresh-token-77d1",
+        "eyJhbGciOiJIUzI1NiJ9",
+        "key-body",
+        "\u202e",
+    )
+    assert all(sentinel not in result["error"] for sentinel in sentinels)
+    assert "\n" not in result["error"]
+    assert all(
+        sentinel not in record.getMessage()
+        for sentinel in sentinels
+        for record in caplog.records
+    )
+
+
+def test_failure_detail_preserves_safe_diagnostics(fake_client):
+    """Sanitization must not erase ordinary actionable error text."""
+    plugin = _new_plugin(fake_client)
+
+    assert plugin._failure_detail(RuntimeError("upstream rejected request 429")) == (
+        "RuntimeError: upstream rejected request 429"
+    )
+
+
 async def test_before_model_axonflow_timeout_fails_open(
     fake_client, callback_context, llm_request_with_text
 ):
@@ -1018,7 +1079,6 @@ async def test_aclose_idempotent_when_owns_client_false(fake_client):
 async def test_aclose_closes_owned_client():
     """Plugin constructed with endpoint+credentials owns its client; aclose closes it."""
     import sys
-    import types
 
     close_calls = []
 
@@ -1113,7 +1173,7 @@ async def test_state_keys_use_temp_prefix(fake_client, callback_context, llm_req
     await plugin.before_model_callback(
         callback_context=callback_context, llm_request=llm_request_with_text
     )
-    for key in callback_context.state.keys():
+    for key in callback_context.state:
         assert key.startswith("temp:"), f"state key {key!r} should be temp-prefixed"
 
 

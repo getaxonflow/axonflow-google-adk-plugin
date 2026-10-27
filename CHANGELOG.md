@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **No answer at all** - a connect or read timeout, a network or connection error, a write error, and an open circuit breaker - follows `fail_open`.
 - **An ambiguous answer is a refusal, not a missing answer.** An answer the server cut off by closing the connection (`httpx.RemoteProtocolError`) and a proxy's refusal (`httpx.ProxyError`) are neither timeouts nor network errors, so they are classified as "answered without allowing" and denied rather than handed to `fail_open`.
 - **The SDK's own constructor error no longer reaches a deny reason or a log.** It quoted the endpoint, the client id and the client secret; only the exception's class name survives now.
+- **Remote platform diagnostics are now safe to surface.** Credential-shaped fields, authorization values, and terminal or Unicode formatting controls are removed before a bounded error detail reaches an ADK denial or warning log; ordinary diagnostic text remains available.
 
 ### Added
 

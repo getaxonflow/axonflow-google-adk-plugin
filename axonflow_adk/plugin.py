@@ -74,7 +74,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -190,6 +192,25 @@ def _classify_failure(exc: BaseException) -> _FailureClass:
 # platform's own sentence, short enough that a large error body does not flood
 # the model's context or the log.
 _FAILURE_DETAIL_MAX_CHARS = 500
+
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(Bearer|Basic)\s+(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]\"']+)"
+)
+_CREDENTIAL_FIELD_RE = re.compile(
+    r"(?i)(?P<quote>[\"'`]?)\b"
+    r"(?P<label>authorization|proxy[_-]?authorization|x[_-]?api[_-]?key|"
+    r"api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|bearer[_-]?token|user[_-]?token|session[_-]?token|"
+    r"private[_-]?key|password|passwd|secret)"
+    # Treat closing key quotes independently: diagnostics are not guaranteed
+    # to contain valid JSON, and a truncated/mismatched quote must not turn
+    # redaction off.
+    r"\b[\"'`]?\s*[:=]\s*"
+    # An unquoted credential is conservatively consumed to a structural
+    # delimiter rather than the next space. That also covers PEM values and
+    # YAML-style block values after whitespace has been normalized.
+    r"(?:\"(?:\\.|[^\"\\])*\"?|'(?:\\.|[^'\\])*'?|[^,;}\]\"']+)"
+)
 
 
 @dataclass(frozen=True)
@@ -687,14 +708,50 @@ class AxonFlowPlugin(BasePlugin):
         )
         return f"{op_name} got no answer from AxonFlow ({failure.detail}), and fail_open is False"
 
-    @staticmethod
-    def _failure_detail(exc: BaseException) -> str:
+    def _failure_detail(self, exc: BaseException) -> str:
         """The exception's class and text, bounded: what a deny or notice shows.
 
         The class name is kept because the text alone can be opaque (a non-JSON
-        answer reads "Expecting value: line 1 column 1 (char 0)").
+        answer reads "Expecting value: line 1 column 1 (char 0)"). The text is
+        remote-controlled on several SDK paths, so credential-shaped values,
+        configured secrets, and terminal/log control characters are removed
+        before it reaches the model transcript or logs.
         """
-        text = str(exc).strip()
+        # C0/C1 and Unicode line/paragraph separators become spaces so words
+        # cannot be joined into a different diagnostic. Format controls are
+        # removed, which both prevents bidi/log spoofing and closes invisible
+        # key-splitting bypasses such as ``user\u200b_token``.
+        # The rendered result is capped at 500 characters. Bound the
+        # remote-controlled input before applying regexes as well so a huge
+        # error body cannot turn diagnostic rendering into avoidable CPU work.
+        raw_text = str(exc).strip()[: _FAILURE_DETAIL_MAX_CHARS * 4]
+        chars: list[str] = []
+        for char in raw_text:
+            category = unicodedata.category(char)
+            if category == "Cf":
+                continue
+            chars.append(" " if category in {"Cc", "Zl", "Zp"} else char)
+        text = "".join(chars)
+        text = " ".join(text.split())
+
+        # Exact configured values catch an upstream that reflects a credential
+        # without a label. Short/default values are skipped to avoid replacing
+        # ordinary prose (for example the default user token "anonymous").
+        exact_secrets = (self._client_secret, self._config.default_user_token)
+        for secret in exact_secrets:
+            if isinstance(secret, str) and len(secret) >= 8 and secret != "anonymous":
+                text = text.replace(secret, "[REDACTED]")
+
+        # Catch conventional response-body/header renderings, including a
+        # per-invocation user token that is not available on this helper.
+        text = _AUTH_SCHEME_RE.sub(r"\1 [REDACTED]", text)
+        text = _CREDENTIAL_FIELD_RE.sub(
+            lambda match: (
+                f"{match.group('quote')}{match.group('label')}"
+                f"{match.group('quote')}=[REDACTED]"
+            ),
+            text,
+        )
         detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
         if len(detail) > _FAILURE_DETAIL_MAX_CHARS:
             detail = detail[: _FAILURE_DETAIL_MAX_CHARS - 3] + "..."
