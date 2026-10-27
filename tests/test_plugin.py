@@ -146,9 +146,15 @@ async def test_remote_failure_detail_redacts_credentials_and_log_controls(
     from axonflow.exceptions import ConnectorError
 
     secret = "SUPERSECRET-reflected-7c1d"
+    dynamic_token = "dynamic-user-token-92ad"
+    remote_access_token = "remote-access-token-44f1"
     fake_client.raise_on_check_tool_input = ConnectorError(
         f"upstream\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature "
-        f"client_secret={secret} opaque={secret}",
+        f"client_secret={secret} opaque={secret} "
+        f"\"user_token\":\"{dynamic_token}\" "
+        f"{{'access_token': '{remote_access_token}'}} "
+        "private_key=-----BEGIN PRIVATE KEY----- key-body -----END PRIVATE KEY----- "
+        "safe\u202eFORGED",
         "adk-tool",
         "check-input",
     )
@@ -163,12 +169,31 @@ async def test_remote_failure_detail_redacts_credentials_and_log_controls(
     )
 
     assert isinstance(result, dict)
-    assert result["error"].count("[REDACTED]") >= 2, result
-    assert secret not in result["error"]
-    assert "eyJhbGciOiJIUzI1NiJ9" not in result["error"]
+    assert "[REDACTED]" in result["error"], result
+    sentinels = (
+        secret,
+        dynamic_token,
+        remote_access_token,
+        "eyJhbGciOiJIUzI1NiJ9",
+        "key-body",
+        "\u202e",
+    )
+    assert all(sentinel not in result["error"] for sentinel in sentinels)
     assert "\n" not in result["error"]
-    assert all(secret not in record.getMessage() for record in caplog.records)
-    assert all("eyJhbGciOiJIUzI1NiJ9" not in record.getMessage() for record in caplog.records)
+    assert all(
+        sentinel not in record.getMessage()
+        for sentinel in sentinels
+        for record in caplog.records
+    )
+
+
+def test_failure_detail_preserves_safe_diagnostics(fake_client):
+    """Sanitization must not erase ordinary actionable error text."""
+    plugin = _new_plugin(fake_client)
+
+    assert plugin._failure_detail(RuntimeError("upstream rejected request 429")) == (
+        "RuntimeError: upstream rejected request 429"
+    )
 
 
 async def test_before_model_axonflow_timeout_fails_open(

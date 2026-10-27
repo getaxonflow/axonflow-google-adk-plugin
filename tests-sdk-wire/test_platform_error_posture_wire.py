@@ -422,10 +422,16 @@ async def test_a_remote_error_cannot_reflect_credentials_or_control_characters(
     """The real SDK copies the remote JSON ``error`` field into
     ``ConnectorError``. The plugin must retain useful text without reflecting
     credentials or log-control characters into the ADK result and logs."""
+    dynamic_token = "dynamic-user-token-wire-92ad"
+    remote_access_token = "remote-access-token-wire-44f1"
     body = {
         "error": (
             "upstream\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature "
-            "client_secret=wire-secret opaque=wire-secret user_token=wire-user"
+            "client_secret=wire-secret opaque=wire-secret "
+            f'"user_token":"{dynamic_token}" '
+            f"{{'access_token': '{remote_access_token}'}} "
+            "private_key=-----BEGIN PRIVATE KEY----- key-body -----END PRIVATE KEY----- "
+            "safe\u202eFORGED"
         )
     }
     stub.answer(500, "application/json", json.dumps(body))
@@ -435,8 +441,15 @@ async def test_a_remote_error_cannot_reflect_credentials_or_control_characters(
     result = await _before_tool(plugin)
 
     assert isinstance(result, dict)
-    assert result["error"].count("[REDACTED]") >= 3, result
-    for secret in ("wire-secret", "wire-user", "eyJhbGciOiJIUzI1NiJ9"):
+    assert "[REDACTED]" in result["error"], result
+    for secret in (
+        "wire-secret",
+        dynamic_token,
+        remote_access_token,
+        "eyJhbGciOiJIUzI1NiJ9",
+        "key-body",
+        "\u202e",
+    ):
         assert secret not in result["error"], result
         assert all(secret not in record.getMessage() for record in caplog.records)
     assert "\n" not in result["error"]

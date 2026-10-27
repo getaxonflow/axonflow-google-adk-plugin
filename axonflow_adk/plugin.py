@@ -76,6 +76,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -191,6 +192,22 @@ def _classify_failure(exc: BaseException) -> _FailureClass:
 # platform's own sentence, short enough that a large error body does not flood
 # the model's context or the log.
 _FAILURE_DETAIL_MAX_CHARS = 500
+
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(Bearer|Basic)\s+(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}\]\"']+)"
+)
+_CREDENTIAL_FIELD_RE = re.compile(
+    r"(?i)(?P<quote>[\"']?)\b"
+    r"(?P<label>authorization|proxy[_-]?authorization|x[_-]?api[_-]?key|"
+    r"api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|bearer[_-]?token|user[_-]?token|session[_-]?token|"
+    r"private[_-]?key|password|passwd|secret)"
+    r"\b(?P=quote)\s*[:=]\s*"
+    # An unquoted credential is conservatively consumed to a structural
+    # delimiter rather than the next space. That also covers PEM values and
+    # YAML-style block values after whitespace has been normalized.
+    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^,;}\]\"']+)"
+)
 
 
 @dataclass(frozen=True)
@@ -697,8 +714,21 @@ class AxonFlowPlugin(BasePlugin):
         configured secrets, and terminal/log control characters are removed
         before it reaches the model transcript or logs.
         """
-        text = str(exc).strip()
-        text = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", text)
+        # C0/C1 and Unicode line/paragraph separators become spaces so words
+        # cannot be joined into a different diagnostic. Format controls are
+        # removed, which both prevents bidi/log spoofing and closes invisible
+        # key-splitting bypasses such as ``user\u200b_token``.
+        # The rendered result is capped at 500 characters. Bound the
+        # remote-controlled input before applying regexes as well so a huge
+        # error body cannot turn diagnostic rendering into avoidable CPU work.
+        raw_text = str(exc).strip()[: _FAILURE_DETAIL_MAX_CHARS * 4]
+        chars: list[str] = []
+        for char in raw_text:
+            category = unicodedata.category(char)
+            if category == "Cf":
+                continue
+            chars.append(" " if category in {"Cc", "Zl", "Zp"} else char)
+        text = "".join(chars)
         text = " ".join(text.split())
 
         # Exact configured values catch an upstream that reflects a credential
@@ -711,10 +741,12 @@ class AxonFlowPlugin(BasePlugin):
 
         # Catch conventional response-body/header renderings, including a
         # per-invocation user token that is not available on this helper.
-        text = re.sub(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1 [REDACTED]", text)
-        text = re.sub(
-            r"(?i)\b(authorization|proxy-authorization|x-api-key|api[_-]?key|client[_-]?secret|access[_-]?token|bearer[_-]?token|user[_-]?token)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
-            r"\1=[REDACTED]",
+        text = _AUTH_SCHEME_RE.sub(r"\1 [REDACTED]", text)
+        text = _CREDENTIAL_FIELD_RE.sub(
+            lambda match: (
+                f"{match.group('quote')}{match.group('label')}"
+                f"{match.group('quote')}=[REDACTED]"
+            ),
             text,
         )
         detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
