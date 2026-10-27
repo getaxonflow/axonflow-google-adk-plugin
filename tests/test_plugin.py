@@ -137,6 +137,40 @@ async def test_before_model_failure_that_is_not_a_connection_failure_denies(
     assert text.startswith("[AxonFlow policy denial] pre_check did not complete with an allow: RuntimeError: "), text
 
 
+async def test_remote_failure_detail_redacts_credentials_and_log_controls(
+    fake_client, tool_context, fake_tool, caplog
+):
+    """A proxy/platform error body is remote-controlled. Credential-shaped
+    values and configured secrets must not reach the model transcript or log,
+    and control characters must not create forged log lines."""
+    from axonflow.exceptions import ConnectorError
+
+    secret = "SUPERSECRET-reflected-7c1d"
+    fake_client.raise_on_check_tool_input = ConnectorError(
+        f"upstream\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature "
+        f"client_secret={secret} opaque={secret}",
+        "adk-tool",
+        "check-input",
+    )
+    plugin = _new_plugin(fake_client)
+    plugin._client_secret = secret
+    caplog.set_level("WARNING", logger="axonflow_adk.plugin")
+
+    result = await plugin.before_tool_callback(
+        tool=fake_tool,
+        tool_args={"amount": 1},
+        tool_context=tool_context,
+    )
+
+    assert isinstance(result, dict)
+    assert result["error"].count("[REDACTED]") >= 2, result
+    assert secret not in result["error"]
+    assert "eyJhbGciOiJIUzI1NiJ9" not in result["error"]
+    assert "\n" not in result["error"]
+    assert all(secret not in record.getMessage() for record in caplog.records)
+    assert all("eyJhbGciOiJIUzI1NiJ9" not in record.getMessage() for record in caplog.records)
+
+
 async def test_before_model_axonflow_timeout_fails_open(
     fake_client, callback_context, llm_request_with_text
 ):
@@ -1018,7 +1052,6 @@ async def test_aclose_idempotent_when_owns_client_false(fake_client):
 async def test_aclose_closes_owned_client():
     """Plugin constructed with endpoint+credentials owns its client; aclose closes it."""
     import sys
-    import types
 
     close_calls = []
 
@@ -1113,7 +1146,7 @@ async def test_state_keys_use_temp_prefix(fake_client, callback_context, llm_req
     await plugin.before_model_callback(
         callback_context=callback_context, llm_request=llm_request_with_text
     )
-    for key in callback_context.state.keys():
+    for key in callback_context.state:
         assert key.startswith("temp:"), f"state key {key!r} should be temp-prefixed"
 
 

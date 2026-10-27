@@ -74,6 +74,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -687,14 +688,35 @@ class AxonFlowPlugin(BasePlugin):
         )
         return f"{op_name} got no answer from AxonFlow ({failure.detail}), and fail_open is False"
 
-    @staticmethod
-    def _failure_detail(exc: BaseException) -> str:
+    def _failure_detail(self, exc: BaseException) -> str:
         """The exception's class and text, bounded: what a deny or notice shows.
 
         The class name is kept because the text alone can be opaque (a non-JSON
-        answer reads "Expecting value: line 1 column 1 (char 0)").
+        answer reads "Expecting value: line 1 column 1 (char 0)"). The text is
+        remote-controlled on several SDK paths, so credential-shaped values,
+        configured secrets, and terminal/log control characters are removed
+        before it reaches the model transcript or logs.
         """
         text = str(exc).strip()
+        text = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", text)
+        text = " ".join(text.split())
+
+        # Exact configured values catch an upstream that reflects a credential
+        # without a label. Short/default values are skipped to avoid replacing
+        # ordinary prose (for example the default user token "anonymous").
+        exact_secrets = (self._client_secret, self._config.default_user_token)
+        for secret in exact_secrets:
+            if isinstance(secret, str) and len(secret) >= 8 and secret != "anonymous":
+                text = text.replace(secret, "[REDACTED]")
+
+        # Catch conventional response-body/header renderings, including a
+        # per-invocation user token that is not available on this helper.
+        text = re.sub(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1 [REDACTED]", text)
+        text = re.sub(
+            r"(?i)\b(authorization|proxy-authorization|x-api-key|api[_-]?key|client[_-]?secret|access[_-]?token|bearer[_-]?token|user[_-]?token)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+            r"\1=[REDACTED]",
+            text,
+        )
         detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
         if len(detail) > _FAILURE_DETAIL_MAX_CHARS:
             detail = detail[: _FAILURE_DETAIL_MAX_CHARS - 3] + "..."

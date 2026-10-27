@@ -33,7 +33,12 @@ SELECTED_TESTS="${TESTS:-$ALL_TESTS}"
 for arg in "$@"; do
   case "$arg" in
     --no-down) TEAR_DOWN=false ;;
-    --list) printf '%s\n' $ALL_TESTS; exit 0 ;;
+    --list)
+      for suite in $ALL_TESTS; do
+        printf '%s\n' "$suite"
+      done
+      exit 0
+      ;;
     *) echo "Unknown arg: $arg"; exit 2 ;;
   esac
 done
@@ -86,6 +91,8 @@ stack_up() {
   log "Stack ready"
 }
 
+# Invoked through the EXIT trap in main.
+# shellcheck disable=SC2329
 stack_down() {
   if [ "$TEAR_DOWN" = "true" ]; then
     log "=== Tearing down E2E stack ==="
