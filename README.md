@@ -36,7 +36,7 @@ runner = InMemoryRunner(
 
 ### Hosted Starter account and credential
 
-Hosted Starter begins in the [verified web account](https://portal.try.getaxonflow.com/hosted/start), not with anonymous `/api/v1/register`. After the owner activates a plan, download the Hosted API link command from the Portal, run it locally, and approve its device code in the owner session. The command saves a separate revocable credential in mode-0600 `~/.config/axonflow/hosted-api.json`. Use its `endpoint`, `tenant_id` as `client_id`, and `secret` as `client_secret`; keep the file and secret out of source control and agent prompts.
+Hosted Starter begins in the [verified web account](https://portal.try.getaxonflow.com/hosted/start), not with anonymous `/api/v1/register`. After the owner activates a plan, download the Hosted API link command from the Portal, run it locally, and approve its device code in the owner session. The command saves a separate revocable credential in mode-0600 `~/.config/axonflow/hosted-api.json`. Use its `endpoint`, `clientId` as `client_id`, and `clientSecret` as `client_secret`; keep the file and secret out of source control and agent prompts.
 
 For governed Hosted work, configure `AxonFlowPluginConfig(fail_open=False)` so an unavailable policy service also stops calls. An answered 402 or 429 is a refusal under either fail mode; restore the paid entitlement or wait for the allowance reset before retrying. The plugin consumes an existing linked credential and does not create a tenant or pair a client itself.
 
